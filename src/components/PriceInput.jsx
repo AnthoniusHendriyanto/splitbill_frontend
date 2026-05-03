@@ -1,0 +1,58 @@
+import React from 'react';
+import { twMerge } from 'tailwind-merge';
+import { clsx } from 'clsx';
+
+function cn(...inputs) {
+  return twMerge(clsx(inputs));
+}
+
+const PriceInput = ({ 
+  value, 
+  onChange, 
+  className, 
+  placeholder = "0",
+  variant = "default" // "default" or "ghost"
+}) => {
+  const formatIDR = (val) => {
+    if (val === undefined || val === null || val === '') return '';
+    return val.toLocaleString('id-ID');
+  };
+
+  const handleInputChange = (e) => {
+    const rawValue = e.target.value.replace(/\./g, '');
+    // Poka-Yoke: Ensure only numbers are entered
+    if (/^\d*$/.test(rawValue)) {
+      onChange(rawValue === '' ? 0 : parseInt(rawValue, 10));
+    }
+  };
+
+  if (variant === "ghost") {
+    return (
+      <div className={cn("flex items-center justify-end gap-2 group-focus-within:text-indigo-600 transition-colors", className)}>
+        <span className="text-xs font-black text-slate-400">Rp</span>
+        <input 
+          type="text"
+          value={formatIDR(value === 0 ? '' : value)}
+          onChange={handleInputChange}
+          className="w-32 bg-transparent border-none focus:ring-0 text-right font-black text-slate-900 dark:text-white p-0 text-xl outline-none"
+          placeholder={placeholder}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn("relative flex items-center", className)}>
+      <span className="absolute left-3 text-slate-400 font-bold text-xs">Rp</span>
+      <input
+        type="text"
+        value={formatIDR(value)}
+        onChange={handleInputChange}
+        placeholder={placeholder}
+        className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-bold text-slate-900 dark:text-white outline-none ring-indigo-500/20 focus:ring-2 transition-all"
+      />
+    </div>
+  );
+};
+
+export default PriceInput;
