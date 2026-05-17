@@ -10,11 +10,14 @@ SplitMate isn't just a utility; it's a financial companion. Our interface is des
 
 ## Key Features
 
-- **Poka-Yoke Wizard Flow**: A disciplined, 5-step sequential flow that guarantees data integrity (Scan → Add People → Assign Items → Review Summary → Settle).
+- **Poka-Yoke Wizard Flow**: A disciplined, 5-step sequential flow that guarantees data integrity (Scan → Review Ledger → Add People → Assign Shares → Settlement).
 - **Payment Intelligence Layer**: Real-time financial state derivation using `useMemo` for subtotal, tax, service charges, and grand totals.
 - **Glassmorphic UI**: A state-of-the-art design featuring smooth gradients, blur effects, and premium dark mode aesthetics.
 - **Micro-Animations**: Powered by Framer Motion, every interaction—from dragging items to switching steps—is buttery smooth.
 - **Zustand State Engine**: Centralized, high-performance state management for handling complex bill assignments.
+- **Backend Integration**: Full API integration with JWT authentication, auto-refresh, and guest mode support.
+- **Premium Tier System**: Gated features with upgrade modal ($2.99/month).
+- **Multi-Currency Support**: 9 currencies (IDR, USD, EUR, etc.) with proper formatting.
 
 ---
 
@@ -22,11 +25,11 @@ SplitMate isn't just a utility; it's a financial companion. Our interface is des
 
 - **Framework**: React 19 (Latest stable)
 - **Build Tool**: Vite 8
-- **State Management**: Zustand 5
+- **State Management**: Zustand 5 (with persist middleware)
 - **Animations**: Framer Motion 12
 - **Styling**: Tailwind CSS 3.4+ with `tailwind-merge` and `clsx`
 - **Icons**: Material Symbols Outlined
-- **API Client**: Axios
+- **API Client**: Centralized `src/lib/api.js` with JWT + auto-refresh
 
 ---
 
@@ -77,9 +80,11 @@ Open [http://localhost:5173](http://localhost:5173) to view the application.
 ```text
 ├── src/
 │   ├── components/       # Primitive and composite UI components
-│   ├── store/            # Zustand store (useBillStore.js)
+│   ├── store/            # Zustand stores (useBillStore.js, useAuthStore.js)
 │   ├── hooks/            # Custom hooks (e.g., useTheme)
 │   ├── utils/            # Formatting and calculation helpers
+│   ├── pages/            # Page components (Login, Register, BillDetail)
+│   ├── lib/              # API client and utilities
 │   ├── App.jsx           # Main Wizard Orchestrator
 │   └── main.jsx          # Application entry
 ├── public/               # Static assets
@@ -88,13 +93,22 @@ Open [http://localhost:5173](http://localhost:5173) to view the application.
 
 ### Wizard Flow Logic
 
-The application uses an index-based wizard orchestrator (`activeStep` 1–5):
+The application uses an index-based wizard orchestrator (`step` 1–5):
 
-1. **Step 1 (Scan)**: OCR processing and bill validation.
-2. **Step 2 (People)**: Dynamic participant management.
-3. **Step 3 (Assign)**: Tax-aware item distribution.
-4. **Step 4 (Summary)**: Financial verification and debt mapping.
-5. **Step 5 (Settle)**: Payment recording and completion.
+1. **Step 1 (Scan Receipt)**: OCR processing with camera/upload/manual entry.
+2. **Step 2 (Review Ledger)**: Edit items, adjust service charge & tax.
+3. **Step 3 (Add People)**: Add participants, select payer.
+4. **Step 4 (Assign Shares)**: Equal/Custom/Percentage split (PremiumModal for free users).
+5. **Step 5 (Settlement)**: Review totals, view DebtMap, save bill.
+
+---
+
+## Authentication
+
+- **Login/Register**: Full JWT-based authentication
+- **Guest Mode**: Use app without account (local-only)
+- **Auto-Refresh**: Token refresh handled automatically
+- **Tier System**: Free vs Premium badges in UI
 
 ---
 
@@ -105,7 +119,8 @@ The application uses an index-based wizard orchestrator (`activeStep` 1–5):
 | `StepHeader` | Handles navigation and sequential validation locks. |
 | `PriceInput` | Precision-control for financial entries. |
 | `DebtMap` | Visual architecture of who owes whom. |
-| `AssignmentGrid`| Multi-column assignment interface for high-density data. |
+| `AssignmentGrid` | Multi-column assignment interface for high-density data. |
+| `PremiumModal` | Upgrade prompt for locked features ($2.99/month). |
 
 ---
 

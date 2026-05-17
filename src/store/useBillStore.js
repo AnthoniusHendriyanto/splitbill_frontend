@@ -1,29 +1,23 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
+import { api } from '../lib/api';
+import useAuthStore from './useAuthStore';
 
 const useBillStore = create(
   persist(
     (set, get) => ({
       bill: {
         id: uuidv4(),
-        title: 'Dinner at Le Petit Bistro',
-        items: [
-          { id: uuidv4(), name: 'Wagyu Ribeye Steak', price: 450000 },
-          { id: uuidv4(), name: 'Salmon Fillet', price: 280000 },
-          { id: uuidv4(), name: 'Truffle Fries', price: 135000 },
-          { id: uuidv4(), name: 'Red Wine Bottle', price: 850000 },
-        ],
-        persons: [
-          { id: 'p1', name: 'Alex Rivera' },
-          { id: 'p2', name: 'Sarah Jenkins' },
-          { id: 'p3', name: 'Marcus Chen' },
-        ],
-        tax: 10,
-        taxMode: 'percent', // 'percent' or 'amount'
+        title: '',
+        items: [],
+        persons: [],
+        tax: 11,
+        taxMode: 'percent',
         serviceCharge: 5,
-        serviceMode: 'percent', // 'percent' or 'amount'
-        payerId: 'p1', // ID of the person who paid
+        serviceMode: 'percent',
+        payerId: null,
+        splitType: 'equal',
       },
       
       updateBill: (data) => set((state) => ({ 
@@ -101,9 +95,155 @@ const useBillStore = create(
           serviceCharge: 5,
           serviceMode: 'percent',
           payerId: null,
+          splitType: 'equal',
         },
         assignments: {},
       }),
+
+      completedBills: [],
+
+      fetchCompletedBills: async () => {
+        const isAuth = useAuthStore.getState().isAuthenticated;
+        if (!isAuth) return;
+        try {
+          const res = await api.getBills();
+          if (res && res.data) {
+            const mapped = res.data.map(bill => ({
+              id: bill.id,
+              title: bill.title,
+              completedAt: bill.created_at,
+              grandTotal: bill.grand_total,
+              personCount: bill.person_count,
+              totals: [],
+              items: [],
+              persons: [],
+              assignments: {},
+              serverData: bill,
+            }));
+            set({ completedBills: mapped });
+          }
+        } catch (err) {
+          console.error('Failed to fetch bills from server:', err);
+        }
+      },
+
+      completeBill: async () => {
+        const state = get();
+        const totals = state.calculateTotals();
+        const grandTotal = totals.reduce((sum, p) => sum + p.total, 0);
+        const isAuth = useAuthStore.getState().isAuthenticated;
+
+        // Prepare bill data for API
+        const billData = {
+          title: state.bill.title || 'Untitled Bill',
+          items: state.bill.items.map(item => ({ name: item.name, price: item.price })),
+          persons: state.bill.persons.map(p => ({ name: p.name })),
+          split_type: 'custom', // Using custom for now (Step 4 assignments)
+          assignments: Object.entries(state.assignments).flatMap(([personId, items]) =>
+            Object.entries(items)
+              .filter(([, assigned]) => assigned)
+              .map(([itemId]) => ({ person_id: personId, item_id: itemId }))
+          ),
+          service_charge: state.bill.serviceCharge || 0,
+          tax: state.bill.tax || 0,
+        };
+
+        let serverBill = null;
+
+        // Try to save to backend if authenticated
+        if (isAuth) {
+          try {
+            serverBill = await api.createBill(billData);
+          } catch (err) {
+            console.error('Failed to save bill to server:', err);
+            // Continue with local save
+          }
+        }
+
+        // Always save locally
+        set((state) => {
+          const mappedPersons = state.bill.persons.map(p => {
+            const pTotal = totals.find(t => t.id === p.id)?.total || 0;
+            return {
+              ...p,
+              paid: (p.id === state.bill.payerId || pTotal === 0) ? true : false,
+              paymentInfo: p.paymentInfo ? { ...p.paymentInfo } : undefined
+            };
+          });
+
+          const isAllPaid = mappedPersons.every(p => p.paid);
+
+          return {
+            completedBills: [
+              {
+                id: serverBill?.id || uuidv4(),
+                title: state.bill.title || 'Untitled Bill',
+                completedAt: new Date().toISOString(),
+                items: state.bill.items.map(item => ({ ...item })),
+                persons: mappedPersons,
+                assignments: JSON.parse(JSON.stringify(state.assignments)),
+                payerId: state.bill.payerId,
+                serviceCharge: state.bill.serviceCharge,
+                serviceMode: state.bill.serviceMode,
+                tax: state.bill.tax,
+                taxMode: state.bill.taxMode,
+                totals: totals,
+                grandTotal: grandTotal,
+                status: isAllPaid ? 'completed' : 'pending',
+                // Store server data if available
+                serverData: serverBill || null,
+              },
+              ...state.completedBills,
+            ],
+          };
+        });
+
+        return serverBill;
+      },
+
+      getCompletedBill: (id) => {
+        return get().completedBills.find(b => b.id === id) || null;
+      },
+
+      deleteCompletedBill: async (id) => {
+        const state = get();
+        const bill = state.completedBills.find(b => b.id === id);
+        
+        // Try to delete from server if authenticated and has server ID
+        const isAuth = useAuthStore.getState().isAuthenticated;
+        if (isAuth && bill?.serverData?.id) {
+          try {
+            await api.deleteBill(bill.serverData.id);
+          } catch (err) {
+            console.error('Failed to delete bill from server:', err);
+          }
+        }
+        
+        // Always delete locally
+        set((state) => ({
+          completedBills: state.completedBills.filter(b => b.id !== id),
+        }));
+      },
+
+      togglePersonPaid: (billId, personId) => set((state) => ({
+        completedBills: state.completedBills.map(b => {
+          if (b.id === billId) {
+            const updatedPersons = b.persons.map(p => {
+              if (p.id === personId) {
+                return { ...p, paid: !p.paid };
+              }
+              return p;
+            });
+            const allPaid = updatedPersons.every(p => p.paid);
+            return {
+              ...b,
+              persons: updatedPersons,
+              status: allPaid ? 'completed' : 'pending'
+            };
+          }
+          return b;
+        })
+      })),
 
       assignments: {}, // { personId: { itemId: boolean } }
 
@@ -134,12 +274,39 @@ const useBillStore = create(
           ? totalBillSubtotal * (bill.serviceCharge / 100) 
           : bill.serviceCharge;
 
+        const grandTotal = totalBillSubtotal + totalTax + totalService;
+
+        // Calculate percentage-based split
+        if (bill.splitType === 'percentage') {
+          return bill.persons.map((person) => {
+            const percentage = person.percentage || 0;
+            const personShare = grandTotal * (percentage / 100);
+            
+            // Distribute proportionally based on their share of the subtotal
+            const shareRatio = percentage / 100;
+            const personTax = totalTax * shareRatio;
+            const personService = totalService * shareRatio;
+            const personSubtotal = personShare - personTax - personService;
+
+            return {
+              ...person,
+              subtotal: settings.roundNumbers ? Math.round(personSubtotal) : Number(personSubtotal.toFixed(2)),
+              tax: settings.roundNumbers ? Math.round(personTax) : Number(personTax.toFixed(2)),
+              service: settings.roundNumbers ? Math.round(personService) : Number(personService.toFixed(2)),
+              total: settings.roundNumbers ? Math.round(personShare) : Number(personShare.toFixed(2)),
+            };
+          });
+        }
+
+        // Equal or custom split
         return bill.persons.map((person) => {
           let subtotal = 0;
           bill.items.forEach((item) => {
             const assignedPersons = bill.persons.filter((p) => assignments[p.id]?.[item.id]);
-            if (assignments[person.id]?.[item.id] && assignedPersons.length > 0) {
-              subtotal += item.price / assignedPersons.length;
+            const sharers = assignedPersons.length > 0 ? assignedPersons : bill.persons;
+            const isAssigned = assignedPersons.length > 0 ? (assignments[person.id]?.[item.id] || false) : true;
+            if (isAssigned && sharers.length > 0) {
+              subtotal += item.price / sharers.length;
             }
           });
 
@@ -166,8 +333,8 @@ const useBillStore = create(
       },
 
       ui: {
-        activeTab: 'bills',
-        step: 2,
+        activeTab: 'dashboard',
+        step: 1,
       },
 
       updateSettings: (data) => set((state) => ({
@@ -180,7 +347,12 @@ const useBillStore = create(
     }),
     {
       name: 'splitmate-storage',
-      partialize: (state) => ({ settings: state.settings }),
+      partialize: (state) => ({ 
+        settings: state.settings, 
+        completedBills: state.completedBills,
+        bill: state.bill,
+        assignments: state.assignments,
+      }),
     }
   )
 );
