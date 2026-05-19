@@ -10,6 +10,7 @@ const useBillStore = create(
       bill: {
         id: uuidv4(),
         title: '',
+        imageUrl: '',
         items: [],
         persons: [],
         tax: 11,
@@ -88,6 +89,7 @@ const useBillStore = create(
         bill: {
           id: uuidv4(),
           title: '',
+          imageUrl: '',
           items: [],
           persons: [],
           tax: 11,
@@ -127,7 +129,7 @@ const useBillStore = create(
         }
       },
 
-      completeBill: async () => {
+      completeBill: async (customStatus = null) => {
         const state = get();
         const totals = state.calculateTotals();
         const grandTotal = totals.reduce((sum, p) => sum + p.total, 0);
@@ -172,13 +174,15 @@ const useBillStore = create(
           });
 
           const isAllPaid = mappedPersons.every(p => p.paid);
+          const finalStatus = customStatus || (isAllPaid ? 'completed' : 'pending');
 
           return {
             completedBills: [
               {
-                id: serverBill?.id || uuidv4(),
+                id: serverBill?.id || state.bill.id || uuidv4(),
                 title: state.bill.title || 'Untitled Bill',
                 completedAt: new Date().toISOString(),
+                imageUrl: state.bill.imageUrl || '',
                 items: state.bill.items.map(item => ({ ...item })),
                 persons: mappedPersons,
                 assignments: JSON.parse(JSON.stringify(state.assignments)),
@@ -189,16 +193,43 @@ const useBillStore = create(
                 taxMode: state.bill.taxMode,
                 totals: totals,
                 grandTotal: grandTotal,
-                status: isAllPaid ? 'completed' : 'pending',
+                status: finalStatus,
                 // Store server data if available
                 serverData: serverBill || null,
               },
-              ...state.completedBills,
+              ...state.completedBills.filter(b => b.id !== (serverBill?.id || state.bill.id)),
             ],
           };
         });
 
         return serverBill;
+      },
+
+      loadBillDraft: (id) => {
+        const state = get();
+        const billToLoad = state.completedBills.find(b => b.id === id);
+        if (!billToLoad) return;
+
+        set({
+          bill: {
+            id: billToLoad.id,
+            title: billToLoad.title,
+            imageUrl: billToLoad.imageUrl || '',
+            items: billToLoad.items.map(item => ({ ...item })),
+            persons: billToLoad.persons.map(p => ({ 
+              id: p.id, 
+              name: p.name, 
+              paymentInfo: p.paymentInfo ? { ...p.paymentInfo } : { bank: '', accountNumber: '', qrisData: '' } 
+            })),
+            tax: billToLoad.tax,
+            taxMode: billToLoad.taxMode,
+            serviceCharge: billToLoad.serviceCharge,
+            serviceMode: billToLoad.serviceMode,
+            payerId: billToLoad.payerId,
+            splitType: 'equal',
+          },
+          assignments: JSON.parse(JSON.stringify(billToLoad.assignments || {})),
+        });
       },
 
       getCompletedBill: (id) => {
@@ -299,6 +330,23 @@ const useBillStore = create(
         }
 
         // Equal or custom split
+        if (bill.splitType === 'custom') {
+          return bill.persons.map((person) => {
+            const customSubtotal = person.customAmount || 0;
+            const shareRatio = totalBillSubtotal > 0 ? customSubtotal / totalBillSubtotal : 0;
+            const personTax = totalTax * shareRatio;
+            const personService = totalService * shareRatio;
+
+            return {
+              ...person,
+              subtotal: settings.roundNumbers ? Math.round(customSubtotal) : Number(customSubtotal.toFixed(2)),
+              tax: settings.roundNumbers ? Math.round(personTax) : Number(personTax.toFixed(2)),
+              service: settings.roundNumbers ? Math.round(personService) : Number(personService.toFixed(2)),
+              total: settings.roundNumbers ? Math.round(customSubtotal + personTax + personService) : Number((customSubtotal + personTax + personService).toFixed(2)),
+            };
+          });
+        }
+
         return bill.persons.map((person) => {
           let subtotal = 0;
           bill.items.forEach((item) => {

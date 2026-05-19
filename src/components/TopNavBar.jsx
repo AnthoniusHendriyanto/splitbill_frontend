@@ -1,48 +1,66 @@
 import { memo } from 'react';
 import { Link } from 'react-router-dom';
 import useAuthStore from '../store/useAuthStore';
+import useBillStore from '../store/useBillStore';
 import Icon from './Icon';
+import { twMerge } from 'tailwind-merge';
+import { clsx } from 'clsx';
+
+function cn(...inputs) {
+  return twMerge(clsx(inputs));
+}
 
 const TopNavBar = memo(() => {
-  const { user, isAuthenticated } = useAuthStore();
+  const { ui, updateUI } = useBillStore();
+  const user = useAuthStore((state) => state.user);
+  const accessToken = useAuthStore((state) => state.accessToken);
+  const isAuthenticated = !!accessToken;
+
+  const sidebarCollapsed = ui?.sidebarCollapsed ?? false;
 
   return (
-    <header className="fixed top-0 right-0 w-[calc(100%-280px)] h-16 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md border-b border-gray-200 dark:border-gray-800 shadow-sm flex justify-between items-center px-8 z-40 font-inter text-sm">
-      <div className="flex items-center gap-4 flex-1 max-w-xl">
+    <header className={cn(
+      "fixed top-0 right-0 h-16 bg-[#070b19]/80 backdrop-blur-md border-b border-slate-900 flex justify-between items-center px-8 z-40 font-inter text-sm transition-all duration-300",
+      sidebarCollapsed ? "w-[calc(100%-80px)]" : "w-[calc(100%-280px)]"
+    )}>
+      {/* Search Input */}
+      <div className="flex items-center gap-4 flex-1 max-w-md">
         <div className="relative w-full">
-          <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-lg" />
+          <Icon name="search" className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-lg" />
           <input
-            className="w-full pl-10 pr-4 py-2 bg-slate-100 dark:bg-slate-800 border-none rounded-lg focus:ring-2 ring-primary/20 transition-all text-sm"
-            placeholder="Search items or people..."
+            className="w-full pl-10 pr-4 py-2 bg-slate-950/60 border border-slate-900 rounded-xl focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-all text-xs font-medium placeholder-slate-500 text-slate-200 outline-none"
+            placeholder="Search transactions, bills, or friends..."
             type="text"
           />
         </div>
       </div>
+
+      {/* Right Controls */}
       <div className="flex items-center gap-6">
-        <div className="flex items-center gap-4 text-slate-600 dark:text-slate-400">
-          <button aria-label="Notifications" className="p-1 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer transition-colors hover:text-indigo-600 dark:hover:text-indigo-400">
-            <Icon name="notifications" />
+        <div className="flex items-center gap-4 text-slate-400">
+          <button aria-label="Notifications" className="p-2 bg-slate-950/40 border border-slate-900/50 rounded-xl hover:text-indigo-400 hover:border-indigo-950 transition-all cursor-pointer">
+            <Icon name="notifications" className="text-lg" />
           </button>
-          <button aria-label="History" className="p-1 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer transition-colors hover:text-indigo-600 dark:hover:text-indigo-400">
-            <Icon name="history" />
+          <button aria-label="History" className="p-2 bg-slate-950/40 border border-slate-900/50 rounded-xl hover:text-indigo-400 hover:border-indigo-950 transition-all cursor-pointer">
+            <Icon name="history" className="text-lg" />
           </button>
         </div>
-        <div className="h-8 w-px bg-gray-200 dark:bg-gray-700"></div>
+        <div className="h-6 w-px bg-slate-900"></div>
         <div className="flex items-center gap-3">
           {isAuthenticated && user ? (
-            <>
+            <div className="flex items-center gap-3 bg-slate-950/40 border border-slate-900 px-3.5 py-1.5 rounded-2xl">
               <div className="text-right">
-                <p className="text-xs font-bold text-on-surface">{user.name || 'User'}</p>
-                <p className="text-[10px] text-slate-500 uppercase tracking-wider">{user.tier || 'free'}</p>
+                <p className="text-xs font-black text-slate-200 leading-tight">{user.name || 'User'}</p>
+                <p className="text-[8px] text-indigo-400 uppercase tracking-widest font-extrabold mt-0.5">{user.tier || 'free'}</p>
               </div>
-              <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-white text-sm font-bold border-2 border-indigo-300">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center text-white text-xs font-extrabold ring-2 ring-indigo-500/30">
                 {user.name?.charAt(0)?.toUpperCase() || 'U'}
               </div>
-            </>
+            </div>
           ) : (
             <Link
               to="/login"
-              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold text-xs hover:bg-indigo-700 transition-all shadow-sm no-underline"
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold text-xs hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20 no-underline border-none outline-none"
             >
               <Icon name="login" className="text-sm" />
               Sign In

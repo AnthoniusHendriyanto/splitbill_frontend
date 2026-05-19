@@ -43,83 +43,118 @@ const stepSubtitles = [
 
 export default function StepHeader({ currentStep, setStep, nextLabel, onNext, onBack, showActions = true, nextDisabled = false, bill, isScanning, isMobile = false }) {
   return (
-    <div className="flex flex-col md:flex-row justify-between md:items-end gap-4 mb-6">
-      <motion.div 
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
-        className="w-full md:w-auto"
-      >
-        {/* On desktop: full step timeline. */}
-        <nav className="hidden md:flex gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex-wrap">
+    <div className="flex flex-col gap-6 mb-8">
+      {/* Premium Wizard Timeline Stepper */}
+      <div className="w-full bg-[#070b19] border border-slate-900 rounded-2xl p-5 relative overflow-hidden">
+        <div className="flex items-center justify-between relative z-10 w-full overflow-x-auto hide-scrollbar py-2">
           {steps.map((s, i) => {
             const { unlocked, reason } = getStepAccess(i, bill, isScanning);
             const isCurrent = currentStep === i + 1;
             const isPast = currentStep > i + 1;
+
             return (
-              <div key={s} className="flex items-center">
-                <button 
+              <div key={s} className="flex items-center flex-1 last:flex-none min-w-[120px]">
+                <button
                   onClick={() => unlocked ? setStep(i + 1) : null}
-                  title={!unlocked ? ` Locked: ${reason}` : ''}
+                  disabled={!unlocked}
                   className={cn(
-                    "transition-colors relative group cursor-pointer border-none bg-transparent outline-none", 
-                    isCurrent ? "text-indigo-600 font-extrabold" : "",
-                    isPast && unlocked ? "text-slate-500 hover:text-indigo-500" : "",
-                    !unlocked ? "opacity-40 cursor-not-allowed" : ""
+                    "flex flex-col items-start gap-1.5 transition-all text-left outline-none relative group border-none bg-transparent cursor-pointer",
+                    isCurrent ? "scale-105" : "",
+                    !unlocked ? "cursor-not-allowed opacity-40" : "hover:opacity-90"
                   )}
                 >
-                  {`${i + 1}. ${s}`}
+                  <div className="flex items-center gap-2">
+                    {/* Circle Node */}
+                    <div className={cn(
+                      "w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black transition-all border",
+                      isCurrent 
+                        ? "bg-indigo-600 border-indigo-500 text-white shadow-[0_0_10px_rgba(99,102,241,0.5)]" 
+                        : isPast 
+                          ? "bg-indigo-950/40 border-indigo-900/60 text-indigo-400" 
+                          : "bg-slate-950/40 border-slate-900 text-slate-500"
+                    )}>
+                      {isPast ? (
+                        <Icon name="check" className="text-xs font-black" />
+                      ) : !unlocked ? (
+                        <Icon name="lock" className="text-[10px]" />
+                      ) : (
+                        i + 1
+                      )}
+                    </div>
+                    {/* Step Name */}
+                    <span className={cn(
+                      "text-[9px] font-black uppercase tracking-widest leading-none",
+                      isCurrent ? "text-white" : isPast ? "text-indigo-400" : "text-slate-500"
+                    )}>
+                      {s}
+                    </span>
+                  </div>
+                  
+                  {/* Tooltip for locked nodes */}
                   {!unlocked && (
-                    <span className="absolute left-0 top-5 z-50 hidden group-hover:block bg-slate-900 text-white text-[10px] px-2 py-1 rounded-md whitespace-nowrap shadow-xl border border-slate-700">
-                       Locked: {reason}
+                    <span className="absolute left-0 -top-8 z-50 hidden group-hover:block bg-slate-950 text-slate-200 text-[8px] font-bold px-2 py-1 rounded border border-slate-800 whitespace-nowrap shadow-xl">
+                      Locked: {reason}
                     </span>
                   )}
                 </button>
-                {i < steps.length - 1 && <Icon name="chevron_right" className={cn("text-[10px]", unlocked ? "opacity-30" : "opacity-15")} />}
+                
+                {/* Connecting Line */}
+                {i < steps.length - 1 && (
+                  <div className="flex-1 mx-4 h-[2px] bg-slate-900 relative min-w-[20px]">
+                    <div className={cn(
+                      "absolute left-0 top-0 h-full transition-all duration-300",
+                      isPast ? "w-full bg-indigo-500" : "w-0 bg-transparent"
+                    )} />
+                  </div>
+                )}
               </div>
             );
           })}
-        </nav>
+        </div>
+      </div>
 
-        {/* Mobile Step Indicator Badge */}
-        <div className="flex md:hidden mb-2">
-          <span className="bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full border border-indigo-100 dark:border-indigo-900/30 shadow-sm">
-            Step {currentStep} of 5 • {stepTitles[currentStep - 1]}
-          </span>
+      {/* Main Title & Action Bar */}
+      <div className="flex flex-col md:flex-row justify-between md:items-end gap-4">
+        <div>
+          <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight flex items-center gap-2">
+            <span className="w-1.5 h-6 bg-indigo-500 rounded-full inline-block"></span>
+            {stepTitles[currentStep - 1] ?? 'Bill'}
+          </h2>
+          <p className="text-slate-500 mt-1.5 text-xs md:text-sm font-medium">
+            {stepSubtitles[currentStep - 1] ?? ''}
+          </p>
         </div>
 
-        <h1 className="font-black text-slate-900 dark:text-white tracking-tight text-2xl md:text-4xl">
-          {stepTitles[currentStep - 1] ?? 'Bill'}
-        </h1>
-        <p className="text-slate-600 dark:text-slate-400 mt-1 md:mt-2 text-xs md:text-sm font-medium">
-          {stepSubtitles[currentStep - 1] ?? ''}
-        </p>
-      </motion.div>
-      {showActions && (
-        <div className="flex gap-3 w-full md:w-auto">
-          <motion.button 
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={onBack}
-            className="flex-1 md:flex-none rounded-xl border border-slate-200 dark:border-slate-800 font-bold hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition-all shadow-sm cursor-pointer focus-visible:ring-2 focus-visible:ring-indigo-500 outline-none px-4 py-2.5 md:px-6 md:py-3 text-xs md:text-sm"
-          >
-            Back
-          </motion.button>
-          <motion.button 
-            whileHover={nextDisabled ? {} : { scale: 1.02 }}
-            whileTap={nextDisabled ? {} : { scale: 0.98 }}
-            onClick={nextDisabled ? undefined : onNext}
-            disabled={nextDisabled}
-            aria-disabled={nextDisabled}
-            className={cn(
-               "flex-1 md:flex-none rounded-xl font-bold transition-all flex items-center justify-center gap-2 outline-none focus-visible:ring-2 focus-visible:ring-offset-2 px-4 py-2.5 md:px-8 md:py-3 text-xs md:text-sm",
-               nextDisabled ? "bg-slate-200 text-slate-400 dark:bg-slate-800 dark:text-slate-600 cursor-not-allowed shadow-none" : "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-700 cursor-pointer focus-visible:ring-indigo-500"
-            )}
-          >
-            {nextLabel}
-            <Icon name="arrow_forward" className="text-xs md:text-sm" />
-          </motion.button>
-        </div>
-      )}
+        {showActions && (
+          <div className="flex items-center gap-3 w-full md:w-auto mt-4 md:mt-0">
+            <button
+              onClick={onBack}
+              disabled={currentStep === 1}
+              className={cn(
+                "px-5 py-2.5 rounded-xl border border-slate-900 font-extrabold text-xs transition-all flex items-center justify-center gap-1.5 outline-none cursor-pointer",
+                currentStep === 1 
+                  ? "opacity-35 cursor-not-allowed text-slate-600" 
+                  : "bg-slate-950/40 text-slate-300 hover:bg-slate-900 hover:border-slate-800"
+              )}
+            >
+              Back
+            </button>
+            <button
+              onClick={nextDisabled ? undefined : onNext}
+              disabled={nextDisabled}
+              className={cn(
+                "px-6 py-2.5 rounded-xl font-extrabold text-xs transition-all flex items-center justify-center gap-2 outline-none border-none",
+                nextDisabled 
+                  ? "bg-slate-900 text-slate-600 cursor-not-allowed shadow-none" 
+                  : "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20 hover:bg-indigo-500 cursor-pointer"
+              )}
+            >
+              {nextLabel}
+              <Icon name="arrow_forward" className="text-xs" />
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
