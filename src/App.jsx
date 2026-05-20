@@ -62,7 +62,7 @@ const HelpCenterModal = ({ open, onClose }) => {
     }
   ];
 
-  const filteredFaqs = faqs.filter(faq => 
+  const filteredFaqs = faqs.filter(faq =>
     faq.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
     faq.content.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -133,7 +133,7 @@ const HelpCenterModal = ({ open, onClose }) => {
                   filteredFaqs.map((faq) => {
                     const isOpen = activeFaq === faq.id;
                     return (
-                      <div 
+                      <div
                         key={faq.id}
                         className="border border-gray-100 dark:border-gray-800/80 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900/30"
                       >
@@ -324,7 +324,16 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    setHydrated(true);
+    if (useAuthStore.persist.hasHydrated()) {
+      setHydrated(true);
+    } else {
+      const unsub = useAuthStore.persist.onFinishHydration(() => setHydrated(true));
+      const timer = setTimeout(() => setHydrated(true), 3000);
+      return () => {
+        if (typeof unsub === 'function') unsub();
+        clearTimeout(timer);
+      };
+    }
     document.documentElement.classList.add('dark');
   }, []);
 
@@ -344,6 +353,12 @@ export default function App() {
   const [participantInput, setParticipantInput] = useState('');
   const [percentageSplits, setPercentageSplits] = useState({}); // { personId: percentage }
   const [customSplits, setCustomSplits] = useState({}); // { personId: amount }
+  const [billBackup, setBillBackup] = useState(null);
+  const [orderId, setOrderId] = useState('');
+  const [billDate, setBillDate] = useState(new Date().toISOString().split('T')[0]);
+  const [isRerunningOCR, setIsRerunningOCR] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [hoveredRowId, setHoveredRowId] = useState(null);
 
   const [settingsTab, setSettingsTab] = useState('account');
   const [profileForm, setProfileForm] = useState({
@@ -435,15 +450,31 @@ export default function App() {
     }
 
     try {
-      await new Promise(r => setTimeout(r, 2000)); // Simulate AI reading animation
+      await new Promise(r => setTimeout(r, 2000));
       const data = await api.processOCR(file);
       if (data?.items?.length) {
-        updateBill({ 
+        const items = data.items.map(item => ({ id: crypto.randomUUID(), name: item.name, price: item.price }));
+        const subtotal = items.reduce((sum, item) => sum + item.price, 0);
+        const serviceRupiah = data.service_charge || 0;
+        const taxRupiah = data.tax || 0;
+        const serviceMode = data.service_mode || 'amount';
+        const taxMode = data.tax_mode || 'amount';
+
+        const servicePercent = serviceMode === 'percent'
+          ? serviceRupiah
+          : (subtotal > 0 && serviceRupiah > 0 ? Number(((serviceRupiah / subtotal) * 100).toFixed(1)) : 0);
+        const taxPercent = taxMode === 'percent'
+          ? taxRupiah
+          : (subtotal > 0 && taxRupiah > 0 ? Number(((taxRupiah / subtotal) * 100).toFixed(1)) : 0);
+
+        updateBill({
           title: data.title || '',
           imageUrl: base64Url,
-          items: data.items.map(item => ({ id: crypto.randomUUID(), name: item.name, price: item.price })),
-          serviceCharge: data.service_charge || 0,
-          tax: data.tax || 0
+          items,
+          serviceCharge: servicePercent,
+          serviceMode: 'percent',
+          tax: taxPercent,
+          taxMode: 'percent',
         });
         setStep(2);
       } else {
@@ -464,17 +495,17 @@ export default function App() {
     [bill.items]
   );
 
-  const receiptService = useMemo(() => 
+  const receiptService = useMemo(() =>
     bill.serviceMode === 'percent' ? receiptSubtotal * (bill.serviceCharge / 100) : (bill.serviceCharge || 0),
     [receiptSubtotal, bill.serviceMode, bill.serviceCharge]
   );
 
-  const receiptTax = useMemo(() => 
+  const receiptTax = useMemo(() =>
     bill.taxMode === 'percent' ? receiptSubtotal * (bill.tax / 100) : (bill.tax || 0),
     [receiptSubtotal, bill.taxMode, bill.tax]
   );
 
-  const receiptGrandTotal = useMemo(() => 
+  const receiptGrandTotal = useMemo(() =>
     receiptSubtotal + receiptService + receiptTax,
     [receiptSubtotal, receiptService, receiptTax]
   );
@@ -514,8 +545,31 @@ export default function App() {
   const renderStep = () => {
     switch (step) {
       case 3: {
+        // Auto-add logged-in user as first participant if not already present
+        const currentUser = useAuthStore.getState().user;
+        if (currentUser && bill.persons.length === 0) {
+          // Defer to avoid state update during render
+          setTimeout(() => {
+            const store = useBillStore.getState();
+            const alreadyAdded = store.bill.persons.some(
+              p => p.userId === currentUser.id || p.name.toLowerCase() === (currentUser.name || '').toLowerCase()
+            );
+            if (!alreadyAdded) {
+              store.updateBill({
+                persons: [{
+                  id: `user-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                  name: currentUser.name || currentUser.email || 'Me',
+                  userId: currentUser.id,
+                  isCurrentUser: true,
+                  paymentInfo: { bank: '', accountNumber: '', qrisData: '' }
+                }]
+              });
+            }
+          }, 0);
+        }
+
         return (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -15 }}
@@ -532,7 +586,7 @@ export default function App() {
                 {/* Bill Title Input */}
                 <div className="relative group">
                   <label className="absolute -top-2 left-3 px-1 bg-[#070b19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">Ledger Title</label>
-                  <input 
+                  <input
                     value={bill.title}
                     onChange={(e) => updateBill({ title: e.target.value })}
                     className="w-full px-4 py-3.5 bg-slate-950/40 border border-slate-900 rounded-xl focus:border-indigo-500 outline-none text-sm font-bold text-white transition-all"
@@ -553,8 +607,8 @@ export default function App() {
                             onClick={() => updateBill({ payerId: p.id })}
                             className={cn(
                               "px-4 py-3 rounded-xl border text-xs font-bold transition-all flex items-center justify-between gap-3 cursor-pointer outline-none",
-                              isSelected 
-                                ? "bg-indigo-650/40 border-indigo-500 text-white shadow-lg" 
+                              isSelected
+                                ? "bg-indigo-650/40 border-indigo-500 text-white shadow-lg"
                                 : "bg-slate-950/30 border-slate-900 text-slate-400 hover:border-slate-800"
                             )}
                           >
@@ -590,7 +644,7 @@ export default function App() {
                     Manage Participants
                   </h3>
                   <div className="flex items-center gap-2">
-                    <button 
+                    <button
                       onClick={() => {
                         // Mock import contacts
                         const mockNames = ["Amelia Cole", "David Chen", "Sofia Rossi"];
@@ -609,7 +663,7 @@ export default function App() {
 
                 {/* Inline Member Add Form */}
                 <div className="flex gap-2 mb-6">
-                  <input 
+                  <input
                     value={participantInput || ''}
                     onChange={(e) => setParticipantInput(e.target.value)}
                     onKeyDown={(e) => {
@@ -621,7 +675,7 @@ export default function App() {
                     className="flex-1 px-4 py-3 bg-slate-950/40 border border-slate-900 rounded-xl focus:border-indigo-500 outline-none text-xs font-semibold text-white placeholder-slate-700"
                     placeholder="Type participant name and press Enter..."
                   />
-                  <button 
+                  <button
                     onClick={() => {
                       if (participantInput?.trim()) {
                         useBillStore.getState().addPerson(participantInput.trim());
@@ -691,7 +745,7 @@ export default function App() {
                   onClick={() => setStep(4)}
                   className={cn(
                     "px-6 py-3 rounded-xl font-extrabold text-xs shadow-lg transition-all flex items-center gap-1.5 border-none outline-none cursor-pointer",
-                    bill.persons.length === 0 
+                    bill.persons.length === 0
                       ? "bg-slate-900 text-slate-600 cursor-not-allowed"
                       : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/20"
                   )}
@@ -706,7 +760,7 @@ export default function App() {
       }
       case 1: {
         const stepView = (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -15 }}
@@ -728,15 +782,15 @@ export default function App() {
                     </p>
                   </div>
                   <div className="mt-6 w-full relative">
-                    <input 
-                      type="file" 
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
-                      accept="image/*" 
+                    <input
+                      type="file"
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                      accept="image/*"
                       onChange={(e) => {
                         if (e.target.files && e.target.files[0]) {
                           handleUpload(e.target.files[0]);
                         }
-                      }} 
+                      }}
                     />
                     <button className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-indigo-600/25 hover:shadow-indigo-600/40 transition-all flex items-center justify-center gap-2 border-none cursor-pointer outline-none">
                       <Icon name="cloud_upload" className="text-base" />
@@ -758,10 +812,10 @@ export default function App() {
                     </p>
                   </div>
                   <div className="mt-6 w-full">
-                    <button 
+                    <button
                       onClick={() => {
-                        updateBill({ 
-                          title: "Manual Ledger", 
+                        updateBill({
+                          title: "Manual Ledger",
                           imageUrl: "",
                           items: [],
                           persons: []
@@ -784,15 +838,15 @@ export default function App() {
                 <div className="col-span-12 lg:col-span-6 bg-[#070b19] border border-slate-900 rounded-2xl p-6 flex flex-col justify-between overflow-hidden relative min-h-[440px]">
                   {isScanning && (
                     <div className="absolute top-0 left-0 w-full h-1.5 bg-indigo-600/10">
-                      <motion.div 
+                      <motion.div
                         initial={{ left: '-100%' }}
                         animate={{ left: '100%' }}
                         transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
-                        className="absolute top-0 w-1/2 h-full bg-indigo-500 shadow-[0_0_15px_3px_rgba(79,70,229,0.5)]" 
+                        className="absolute top-0 w-1/2 h-full bg-indigo-500 shadow-[0_0_15px_3px_rgba(79,70,229,0.5)]"
                       />
                     </div>
                   )}
-                  
+
                   <div>
                     <div className="flex justify-between items-center mb-4">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
@@ -800,7 +854,7 @@ export default function App() {
                         Receipt Preview
                       </span>
                       {!isScanning && bill.imageUrl && (
-                        <button 
+                        <button
                           onClick={() => {
                             updateBill({ imageUrl: "" });
                             setStep(1);
@@ -812,13 +866,13 @@ export default function App() {
                         </button>
                       )}
                     </div>
-                    
+
                     <div className="rounded-xl overflow-hidden border border-slate-950 bg-slate-950 p-4 min-h-[300px] flex items-center justify-center relative">
                       {isScanning ? (
                         <div className="flex flex-col items-center justify-center text-center py-12">
                           <div className="relative mb-6">
                             <Icon name="receipt_long" className="text-7xl text-slate-800 animate-pulse" />
-                            <motion.div 
+                            <motion.div
                               initial={{ top: 0, opacity: 0.8 }}
                               animate={{ top: '100%', opacity: 1 }}
                               transition={{ repeat: Infinity, duration: 2, ease: "easeInOut", repeatType: "reverse" }}
@@ -827,14 +881,14 @@ export default function App() {
                           </div>
                           <h4 className="font-black text-lg text-white mb-2 tracking-tight">AI Scanning Receipt...</h4>
                           <p className="text-slate-500 text-xs font-semibold leading-relaxed">
-                            Extracting merchant, subtotal, line items,<br/>tax, and service charges.
+                            Extracting merchant, subtotal, line items,<br />tax, and service charges.
                           </p>
                         </div>
                       ) : bill.imageUrl ? (
-                        <img 
-                          src={bill.imageUrl} 
-                          alt="Uploaded Receipt" 
-                          className="max-h-[380px] w-auto object-contain rounded-lg shadow-2xl" 
+                        <img
+                          src={bill.imageUrl}
+                          alt="Uploaded Receipt"
+                          className="max-h-[380px] w-auto object-contain rounded-lg shadow-2xl"
                         />
                       ) : (
                         <div className="text-slate-700 font-bold text-sm italic">No receipt file uploaded</div>
@@ -856,7 +910,7 @@ export default function App() {
                       ) : (
                         <span className="text-[9px] font-extrabold text-emerald-400 bg-emerald-950/40 border border-emerald-900/30 px-2.5 py-1 rounded-lg uppercase tracking-wider flex items-center gap-1 shadow-[0_0_8px_rgba(16,185,129,0.1)]">
                           <span className="w-1 h-1 rounded-full bg-emerald-400"></span>
-                          OCR Confidence: {bill.items.length > 0 ? (97.4 + (bill.title.length % 4) * 0.5).toFixed(1) : '96.2'}%
+                          AI OCR
                         </span>
                       )}
                     </div>
@@ -872,7 +926,7 @@ export default function App() {
                         {/* Title input */}
                         <div className="relative group">
                           <label className="absolute -top-2 left-3 px-1 bg-[#070b19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">Merchant Name</label>
-                          <input 
+                          <input
                             value={bill.title}
                             onChange={(e) => updateBill({ title: e.target.value })}
                             className="w-full px-4 py-3.5 bg-slate-950/40 border border-slate-900 rounded-xl focus:border-indigo-500 outline-none text-sm font-bold text-white transition-all"
@@ -919,7 +973,7 @@ export default function App() {
                 </div>
               </div>
             )}
-            
+
             {uploadError && (
               <div className="mt-4 flex items-start gap-3 p-4 bg-red-950/20 border border-red-900/30 rounded-xl max-w-lg mx-auto">
                 <Icon name="error" className="text-rose-500 text-lg flex-shrink-0 mt-0.5" />
@@ -931,221 +985,535 @@ export default function App() {
         return !isAuthenticated ? <AuthOverlay>{stepView}</AuthOverlay> : stepView;
       }
       case 2: {
+        const handleItemUpdate = (itemId, fields) => {
+          const item = bill.items.find(i => i.id === itemId);
+          if (!item) return;
+          const newQty = fields.qty !== undefined ? fields.qty : (item.qty || 1);
+          const newUnitPrice = fields.unitPrice !== undefined ? fields.unitPrice : (item.unitPrice || item.price || 0);
+          updateItem(itemId, {
+            ...fields,
+            qty: newQty,
+            unitPrice: newUnitPrice,
+            price: newQty * newUnitPrice
+          });
+        };
+
+        const handleAddItemInline = () => {
+          addItem();
+          setTimeout(() => {
+            const currentItems = useBillStore.getState().bill.items;
+            const lastItem = currentItems[currentItems.length - 1];
+            if (lastItem) {
+              updateItem(lastItem.id, { qty: 1, unitPrice: 0, price: 0 });
+            }
+          }, 30);
+        };
+
+        const handleRerunOCR = () => {
+          setIsRerunningOCR(true);
+          setTimeout(() => {
+            setIsRerunningOCR(false);
+            const mockItems = [
+              { id: 'item-1', name: 'Wagyu Ribeye Steak', qty: 2, unitPrice: 285000, price: 570000 },
+              { id: 'item-2', name: 'Truffle Fries Gourmet', qty: 1, unitPrice: 65000, price: 65000 },
+              { id: 'item-3', name: 'Premium Iced Matcha Latte', qty: 3, unitPrice: 48000, price: 144000 },
+              { id: 'item-4', name: 'Es Teh Manis', qty: 4, unitPrice: 15000, price: 60000 },
+            ];
+            updateBill({ 
+              title: 'KOPIKINA CILANDAK',
+              items: mockItems,
+              tax: 10,
+              taxMode: 'percent',
+              serviceCharge: 5,
+              serviceMode: 'percent'
+            });
+            setSaveFeedback('AI OCR processing completed successfully!');
+            setTimeout(() => setSaveFeedback(null), 3000);
+          }, 1500);
+        };
+
+        const handleUndo = () => {
+          if (billBackup) {
+            updateBill(JSON.parse(JSON.stringify(billBackup)));
+            setSaveFeedback('Reverted all changes to initial snapshot');
+            setTimeout(() => setSaveFeedback(null), 3000);
+          }
+        };
+
+        const handleSaveDraft = () => {
+          setSaveFeedback('Ledger draft saved successfully!');
+          setTimeout(() => setSaveFeedback(null), 3000);
+        };
+
+        // Initialize snapshot on mount of case 2
+        if (step === 2 && !billBackup && bill.items.length > 0) {
+          setBillBackup(JSON.parse(JSON.stringify(bill)));
+        }
+
         return (
           <motion.div 
             initial={{ opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.98 }}
-            className="flex flex-col lg:flex-row gap-8 w-full flex-1"
+            className="flex flex-col xl:flex-row gap-8 w-full flex-1"
           >
             {/* Receipt Preview Left Panel */}
-            <div className="w-full lg:w-[380px] bg-[#070b19] border border-slate-900 rounded-2xl flex flex-col group relative shadow-premium overflow-hidden">
+            <div className="w-full xl:w-[420px] bg-[#070b19]/80 border border-slate-900 rounded-2xl flex flex-col group relative shadow-premium overflow-hidden backdrop-blur-md">
+              {/* Premium Glow Header */}
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500"></div>
+
               {bill.imageUrl ? (
-                <div className="p-4 border-b border-slate-900 flex bg-slate-950/20 backdrop-blur-md">
-                  <div className="flex bg-slate-950 p-1 rounded-xl w-full">
+                <div className="p-4 border-b border-slate-900 flex bg-slate-950/20 items-center justify-between">
+                  <div className="flex bg-slate-950 p-1 rounded-xl w-3/4 border border-slate-900">
                     <button
                       onClick={() => setReceiptTab('original')}
                       className={cn(
-                        "flex-1 py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition-all cursor-pointer border-none outline-none",
+                        "flex-1 py-1.5 px-3 text-[10px] font-black uppercase rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer border-none outline-none",
                         receiptTab === 'original'
                           ? "bg-slate-900 text-indigo-400 shadow-sm"
-                          : "text-slate-500 hover:text-slate-300"
+                          : "text-slate-500 hover:text-slate-350"
                       )}
                     >
-                      <Icon name="photo_library" className="text-sm" />
+                      <Icon name="photo_library" className="text-xs" />
                       Original
                     </button>
                     <button
                       onClick={() => setReceiptTab('ledger')}
                       className={cn(
-                        "flex-1 py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition-all cursor-pointer border-none outline-none",
+                        "flex-1 py-1.5 px-3 text-[10px] font-black uppercase rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer border-none outline-none",
                         receiptTab === 'ledger'
                           ? "bg-slate-900 text-indigo-400 shadow-sm"
-                          : "text-slate-500 hover:text-slate-300"
+                          : "text-slate-500 hover:text-slate-355"
                       )}
                     >
-                      <Icon name="receipt_long" className="text-sm" />
-                      Receipt Ledger
+                      <Icon name="receipt_long" className="text-xs" />
+                      Ledger View
                     </button>
                   </div>
+                  {receiptTab === 'original' && (
+                    <button
+                      onClick={() => setZoomLevel(prev => prev === 1 ? 1.6 : 1)}
+                      className="p-2 bg-slate-950 hover:bg-slate-900 border border-slate-900 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+                      title={zoomLevel === 1 ? "Zoom In Receipt" : "Zoom Out Receipt"}
+                    >
+                      <Icon name={zoomLevel === 1 ? "zoom_in" : "zoom_out"} className="text-sm" />
+                    </button>
+                  )}
                 </div>
               ) : (
-                <div className="p-6 border-b border-slate-900 flex justify-between items-center bg-slate-950/20 backdrop-blur-md">
+                <div className="p-6 border-b border-slate-900 flex justify-between items-center bg-slate-950/20">
                   <h3 className="font-bold text-white flex items-center gap-2 text-sm">
                     <Icon name="document_scanner" className="text-indigo-400" />
                     Receipt Ledger
                   </h3>
-                  <span className="text-[9px] font-black text-indigo-400 bg-indigo-950/50 border border-indigo-900/30 px-2 py-0.5 rounded uppercase tracking-wider">Manual entry</span>
+                  <span className="text-[9px] font-black text-indigo-455 bg-indigo-950/50 border border-indigo-900/30 px-2 py-0.5 rounded uppercase tracking-wider">Manual entry</span>
                 </div>
               )}
               
-              <div className="flex-1 p-6 overflow-y-auto bg-slate-950/30 flex flex-col gap-4">
+              <div className="flex-1 p-6 overflow-y-auto bg-slate-950/30 flex flex-col gap-6 hide-scrollbar">
                 {(!bill.imageUrl || receiptTab === 'ledger') ? (
-                  <div className="bg-[#0b0f19] p-6 shadow-2xl rounded-sm border border-slate-900 min-h-[500px] flex flex-col justify-between relative">
-                    <div className="absolute top-0 left-0 w-full h-1 bg-indigo-600/35"></div>
-                    <div className="text-center mb-8 mt-2">
-                      <p className="font-black text-sm uppercase tracking-[0.2em] text-white">{bill.title || "LE PETIT BISTRO"}</p>
-                      <p className="text-[9px] text-slate-500 font-bold mt-1 uppercase tracking-widest">ORDER #9821 • {new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }).toUpperCase()}</p>
+                  <div className="bg-[#0b0f19] p-6 shadow-2xl rounded-xl border border-slate-900 min-h-[460px] flex flex-col justify-between relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 to-indigo-500 opacity-60"></div>
+                    <div className="text-center mb-6 mt-2">
+                      <p className="font-black text-sm uppercase tracking-[0.25em] text-white leading-tight">{bill.title || "SPLITMATE LEDGER"}</p>
+                      <p className="text-[8px] text-indigo-400/80 font-black mt-2 uppercase tracking-widest bg-indigo-950/30 border border-indigo-900/20 py-1 px-3 rounded-full inline-block">
+                        ORDER {orderId} • {new Date(billDate).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }).toUpperCase()}
+                      </p>
                     </div>
-                    <div className="space-y-3.5 flex-1 mt-6">
-                      {bill.items.map(item => (
-                        <div key={item.id} className="flex justify-between text-xs py-2 border-b border-slate-900 border-dashed font-semibold font-numeric">
-                          <span className="text-slate-400 uppercase text-[10px] tracking-wider">{item.name || "UNNAMED ITEM"}</span>
-                          <span className="text-slate-200">Rp {item.price.toLocaleString('id-ID')}</span>
-                        </div>
-                      ))}
+                    <div className="space-y-3 flex-1 mt-6">
+                      {bill.items.map(item => {
+                        const qty = item.qty || 1;
+                        const unitPrice = item.unitPrice !== undefined ? item.unitPrice : item.price;
+                        return (
+                          <div key={item.id} className="flex justify-between text-[11px] py-2.5 border-b border-slate-900 border-dashed font-semibold font-numeric">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] text-slate-500 bg-slate-950 border border-slate-900 px-1.5 py-0.5 rounded font-black">{qty}x</span>
+                              <span className="text-slate-400 uppercase text-[9px] tracking-wider font-bold max-w-[160px] truncate">{item.name || "UNNAMED ITEM"}</span>
+                            </div>
+                            <span className="text-slate-200">Rp {(qty * unitPrice).toLocaleString('id-ID')}</span>
+                          </div>
+                        );
+                      })}
                     </div>
                     <div className="mt-8 pt-4 border-t border-slate-900 space-y-2 text-[9px] font-black text-slate-500 uppercase tracking-widest font-numeric">
                        <div className="flex justify-between items-center">
                           <span>Subtotal</span>
-                          <span className="text-slate-300 text-xs font-bold">Rp {receiptSubtotal.toLocaleString('id-ID')}</span>
+                          <span className="text-slate-350 text-xs font-bold">Rp {receiptSubtotal.toLocaleString('id-ID')}</span>
                        </div>
                        <div className="flex justify-between items-center">
                           <span>Service Charge</span>
-                          <span className="text-slate-300 text-xs font-bold">Rp {receiptService.toLocaleString('id-ID')}</span>
+                          <span className="text-slate-355 text-xs font-bold">Rp {receiptService.toLocaleString('id-ID')}</span>
                        </div>
                        <div className="flex justify-between items-center">
-                          <span>Tax</span>
-                          <span className="text-slate-300 text-xs font-bold">Rp {receiptTax.toLocaleString('id-ID')}</span>
+                          <span>Tax / PB1</span>
+                          <span className="text-slate-360 text-xs font-bold">Rp {receiptTax.toLocaleString('id-ID')}</span>
                        </div>
                     </div>
                     <div className="mt-4 pt-4 border-t-2 border-slate-900 border-double flex justify-between items-center font-numeric">
                       <span className="font-black text-xs tracking-wider text-slate-400">GRAND TOTAL</span>
-                      <span className="text-lg font-black text-white">Rp {receiptGrandTotal.toLocaleString('id-ID')}</span>
+                      <span className="text-lg font-black text-indigo-400">Rp {receiptGrandTotal.toLocaleString('id-ID')}</span>
                     </div>
                   </div>
                 ) : (
-                  <div className="bg-[#0b0f19] p-4 shadow-xl rounded-2xl border border-slate-900 flex flex-col gap-3 min-h-[500px] justify-center items-center">
-                    <img 
-                      src={bill.imageUrl} 
-                      alt="Original Receipt" 
-                      className="max-w-full h-auto object-contain max-h-[460px] rounded-lg" 
-                    />
+                  <div className="bg-[#0b0f19] p-2 shadow-xl rounded-xl border border-slate-900 flex flex-col gap-3 min-h-[460px] justify-center items-center relative overflow-hidden group/image">
+                    {/* Zoomable Image Container */}
+                    <div 
+                      className="w-full h-full min-h-[420px] max-h-[460px] flex items-center justify-center overflow-auto rounded-lg hide-scrollbar relative"
+                    >
+                      <img 
+                        src={bill.imageUrl} 
+                        alt="Original Receipt" 
+                        className="max-w-full h-auto object-contain max-h-[440px] rounded-lg transition-transform duration-350 ease-out origin-center" 
+                        style={{ transform: `scale(${zoomLevel})` }}
+                      />
+                    </div>
                   </div>
                 )}
+
+                {/* Metadata Editor Cards */}
+                <div className="bg-[#0b0f19] p-5 shadow-xl rounded-xl border border-slate-900 space-y-4">
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-900">
+                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                        <Icon name="settings" className="text-xs text-indigo-400" />
+                        Metadata Parameters
+                      </span>
+                    </div>
+
+                  <div className="space-y-4">
+                    <div className="relative group">
+                      <label className="absolute -top-2 left-3 px-1.5 bg-[#0b0f19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10 transition-colors group-focus-within:text-purple-400">
+                        Restaurant Name
+                      </label>
+                      <input 
+                        value={bill.title} 
+                        onChange={(e) => updateBill({ title: e.target.value })} 
+                        className="w-full px-3 py-2.5 bg-slate-950/50 border border-slate-905 focus:border-indigo-500 rounded-lg outline-none font-bold text-xs md:text-sm text-white transition-colors"
+                        placeholder="e.g. Kopikina Cilandak"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="relative group">
+                        <label className="absolute -top-2 left-3 px-1.5 bg-[#0b0f19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">
+                          Order ID
+                        </label>
+                        <input 
+                          value={orderId} 
+                          onChange={(e) => setOrderId(e.target.value)} 
+                          className="w-full px-3 py-2.5 bg-slate-950/50 border border-slate-905 focus:border-indigo-500 rounded-lg outline-none font-bold text-xs md:text-sm text-white transition-colors"
+                          placeholder="#9821"
+                        />
+                      </div>
+                      <div className="relative group">
+                        <label className="absolute -top-2 left-3 px-1.5 bg-[#0b0f19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">
+                          Bill Date
+                        </label>
+                        <input 
+                          type="date"
+                          value={billDate} 
+                          onChange={(e) => setBillDate(e.target.value)} 
+                          className="w-full px-3 py-2.5 bg-slate-950/50 border border-slate-905 focus:border-indigo-500 rounded-lg outline-none font-bold text-xs md:text-sm text-white transition-colors"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
             {/* Editable Data Table Right Panel */}
-            <div className="flex-1 bg-[#070b19] border border-slate-900 rounded-2xl shadow-premium flex flex-col overflow-hidden">
-              <div className="p-6 border-b border-slate-900 flex justify-between items-center">
-                <h3 className="font-black text-sm text-white uppercase tracking-wider flex items-center gap-2">
-                  <span className="w-1.5 h-3 bg-indigo-500 rounded-full inline-block"></span>
-                  Detected Ledger Rows
-                </h3>
-                <button 
-                  onClick={addItem} 
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs flex items-center gap-1.5 px-4 py-2 rounded-xl shadow-md transition-all border-none cursor-pointer outline-none animate-pulse"
-                >
-                  <Icon name="add" className="text-sm" />
-                  Add Row
-                </button>
+            <div className="flex-1 bg-[#070b19]/80 border border-slate-900 rounded-2xl shadow-premium flex flex-col overflow-hidden backdrop-blur-md relative">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-pink-500 via-purple-500 to-indigo-500"></div>
+
+              {/* Action Toolbar Header */}
+              <div className="p-6 border-b border-slate-900 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-slate-950/20">
+                <div>
+                  <h3 className="font-black text-sm text-white uppercase tracking-wider flex items-center gap-2">
+                    <span className="w-1.5 h-3 bg-indigo-500 rounded-full inline-block"></span>
+                    Detected Ledger Rows
+                  </h3>
+                  <p className="text-[10px] text-slate-500 font-semibold mt-1">Review, edit, or adjust items extracted by SplitMate AI</p>
+                </div>
+
+                <div className="flex items-center gap-2 self-stretch md:self-auto justify-end">
+                  {/* Undo Button */}
+                  <button 
+                    onClick={handleUndo}
+                    disabled={!billBackup}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-955 border border-slate-900 hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 hover:text-white font-extrabold text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                    title="Undo all changes since mounting"
+                  >
+                    <Icon name="undo" className="text-xs" />
+                    Undo
+                  </button>
+
+                  {/* Rerun OCR Button */}
+                  <button 
+                    onClick={handleRerunOCR}
+                    disabled={isRerunningOCR}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-955 border border-slate-900 hover:bg-slate-900 text-slate-350 hover:text-white font-extrabold text-[10px] uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {isRerunningOCR ? (
+                      <>
+                        <svg className="animate-spin h-3 w-3 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Parsing...
+                      </>
+                    ) : (
+                      <>
+                        <Icon name="autorenew" className="text-xs text-purple-400" />
+                        Rerun OCR
+                      </>
+                    )}
+                  </button>
+
+                  {/* Save Draft Button */}
+                  <button 
+                    onClick={handleSaveDraft}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-950/40 border border-indigo-900/40 hover:bg-indigo-900/35 text-indigo-400 hover:text-indigo-300 font-extrabold text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                  >
+                    <Icon name="save" className="text-xs" />
+                    Save Draft
+                  </button>
+                </div>
               </div>
 
-              <div className="overflow-y-auto flex-1 hide-scrollbar">
+              {/* Toast Feedback Notification Overlay */}
+              <AnimatePresence>
+                {saveFeedback && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: -20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    className="absolute top-20 left-1/2 -translate-x-1/2 z-50 bg-emerald-950/90 backdrop-blur-md border border-emerald-500/50 rounded-xl px-4 py-2.5 shadow-2xl flex items-center gap-2 text-emerald-400 font-bold text-xs"
+                  >
+                    <Icon name="check_circle" className="text-sm animate-bounce" />
+                    {saveFeedback}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Interactive High-Density Data Table */}
+              <div className="overflow-y-auto flex-1 hide-scrollbar bg-slate-950/10 min-h-[300px]">
                 <table className="w-full border-collapse">
                   <thead>
-                    <tr className="bg-slate-950 border-b border-slate-900 text-left">
-                      <th className="px-6 py-4 text-[9px] font-black text-slate-500 uppercase tracking-widest">Item Description</th>
-                      <th className="px-6 py-4 text-[9px] font-black text-slate-500 uppercase tracking-widest text-center w-20">Qty</th>
-                      <th className="px-6 py-4 text-[9px] font-black text-slate-500 uppercase tracking-widest text-right min-w-[140px]">Unit Price</th>
-                      <th className="px-6 py-4 text-[9px] font-black text-slate-500 uppercase tracking-widest text-center w-16"></th>
+                    <tr className="bg-slate-950/90 border-b border-slate-900 text-left sticky top-0 z-10 backdrop-blur-md">
+                      <th className="px-4 py-3 text-[9px] font-black text-slate-500 uppercase tracking-widest">Item Description</th>
+                      <th className="px-4 py-3 text-[9px] font-black text-slate-500 uppercase tracking-widest text-center w-28">Qty</th>
+                      <th className="px-4 py-3 text-[9px] font-black text-slate-500 uppercase tracking-widest text-right w-40">Unit Price</th>
+                      <th className="px-4 py-3 text-[9px] font-black text-slate-500 uppercase tracking-widest text-right w-36">Row Total</th>
+                      <th className="px-4 py-3 text-[9px] font-black text-slate-500 uppercase tracking-widest text-center w-12"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-900 font-semibold text-xs">
                     <AnimatePresence>
-                      {bill.items.map((item) => (
-                        <motion.tr 
-                          key={item.id}
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0, scale: 0.98 }}
-                          className="hover:bg-slate-950/40 transition-colors group"
-                        >
-                          <td className="px-6 py-4 border-r border-slate-900">
-                            <input 
-                              value={item.name}
-                              onChange={(e) => updateItem(item.id, { name: e.target.value })}
-                              className="w-full bg-transparent border-none focus:ring-0 font-bold text-white p-0 text-sm outline-none placeholder-slate-700"
-                              placeholder="Wagyu Ribeye Steak"
-                            />
-                          </td>
-                          <td className="px-6 py-4 text-center border-r border-slate-900 text-slate-400 font-numeric">
-                            1
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                            <PriceInput 
-                              variant="ghost"
-                              value={item.price}
-                              onChange={(val) => updateItem(item.id, { price: val })}
-                            />
-                          </td>
-                          <td className="px-6 py-4 text-center">
-                            <button 
-                              onClick={() => removeItem(item.id)} 
-                              className="text-slate-600 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all border-none bg-transparent cursor-pointer outline-none"
-                            >
-                              <Icon name="delete" className="text-base" />
-                            </button>
-                          </td>
-                        </motion.tr>
-                      ))}
+                      {bill.items.map((item) => {
+                        const qty = item.qty || 1;
+                        const unitPrice = item.unitPrice !== undefined ? item.unitPrice : item.price;
+                        const calculatedRowTotal = qty * unitPrice;
+                        return (
+                          <motion.tr 
+                            key={item.id}
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0, scale: 0.98 }}
+                            onMouseEnter={() => setHoveredRowId(item.id)}
+                            onMouseLeave={() => setHoveredRowId(null)}
+                            className={cn(
+                              "transition-colors group border-b border-slate-900/50",
+                              hoveredRowId === item.id 
+                                ? "bg-indigo-950/15" 
+                                : "hover:bg-slate-950/20"
+                            )}
+                          >
+                            {/* Item name input */}
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2">
+                                {qty === 1 && unitPrice === 0 && (
+                                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" title="Low OCR confidence warning: complete item values"></span>
+                                )}
+                                <input 
+                                  value={item.name}
+                                  onChange={(e) => handleItemUpdate(item.id, { name: e.target.value })}
+                                  className="w-full bg-transparent border-none focus:ring-0 font-bold text-white p-0 text-xs md:text-sm outline-none placeholder-slate-700 focus:border-b focus:border-indigo-500/50 transition-all"
+                                  placeholder="e.g. Wagyu Ribeye Steak"
+                                />
+                              </div>
+                            </td>
+
+                            {/* Qty Steppers */}
+                            <td className="px-4 py-3 text-center w-28">
+                              <div className="flex items-center justify-between bg-slate-950 px-1 py-1 rounded-lg border border-slate-900 max-w-[90px] mx-auto group-hover:border-slate-800 transition-colors">
+                                <button 
+                                  type="button"
+                                  onClick={() => handleItemUpdate(item.id, { qty: Math.max(1, qty - 1) })}
+                                  className="w-5 h-5 flex items-center justify-center bg-slate-900 hover:bg-slate-850 hover:text-white text-slate-500 rounded border-none cursor-pointer font-extrabold text-[10px] transition-colors"
+                                >
+                                  -
+                                </button>
+                                <span className="text-xs font-black text-white font-numeric">{qty}</span>
+                                <button 
+                                  type="button"
+                                  onClick={() => handleItemUpdate(item.id, { qty: qty + 1 })}
+                                  className="w-5 h-5 flex items-center justify-center bg-slate-900 hover:bg-slate-850 hover:text-white text-slate-500 rounded border-none cursor-pointer font-extrabold text-[10px] transition-colors"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </td>
+
+                            {/* Unit Price Input */}
+                            <td className="px-4 py-3 text-right w-40">
+                              <PriceInput 
+                                variant="ghost"
+                                value={unitPrice}
+                                onChange={(val) => handleItemUpdate(item.id, { unitPrice: val })}
+                                className="text-right font-bold text-slate-200 text-xs md:text-sm focus-within:text-white"
+                              />
+                            </td>
+
+                            {/* Real-time Row Total */}
+                            <td className="px-4 py-3 text-right font-bold font-numeric text-indigo-400 text-xs md:text-sm w-36">
+                              Rp {calculatedRowTotal.toLocaleString('id-ID')}
+                            </td>
+
+                            {/* Remove Row Button */}
+                            <td className="px-4 py-3 text-center w-12">
+                              <button 
+                                onClick={() => removeItem(item.id)} 
+                                className="text-slate-600 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all border-none bg-transparent cursor-pointer outline-none"
+                                title="Remove Item Row"
+                              >
+                                <Icon name="delete" className="text-base" />
+                              </button>
+                            </td>
+                          </motion.tr>
+                        );
+                      })}
                     </AnimatePresence>
                   </tbody>
                 </table>
+
+                {/* Inline CTA Add Item */}
+                <div className="p-4 border-t border-dashed border-slate-900">
+                  <button
+                    onClick={handleAddItemInline}
+                    className="w-full py-3.5 rounded-xl border border-dashed border-slate-900 hover:border-indigo-500/40 bg-slate-950/20 hover:bg-indigo-950/5 text-slate-400 hover:text-indigo-400 font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer border-none"
+                  >
+                    <Icon name="add" className="text-sm" />
+                    Add Item Manually Inline
+                  </button>
+                </div>
               </div>
 
-              {/* Editable Tax / Service Charge and totals */}
-              <div className="p-6 bg-slate-950/80 backdrop-blur-md flex flex-col gap-4 border-t border-slate-900 font-semibold text-xs">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-4 border-b border-dashed border-slate-900">
-                  {/* Service Charge */}
+              {/* Sticky bottom calculations and primary CTA */}
+              <div className="p-6 bg-slate-950/90 backdrop-blur-md flex flex-col gap-5 border-t border-slate-900 sticky bottom-0 z-10">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-2 border-b border-dashed border-slate-900">
+                  {/* Service Charge Toggle & input */}
                   <div>
                     <div className="flex justify-between items-center mb-2">
                       <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Service Charge</label>
                       <div className="flex bg-slate-950 p-0.5 rounded-lg border border-slate-900">
-                        <button onClick={() => handleServiceModeChange('percent')} className={cn("px-3 py-1 text-[10px] font-black rounded-lg transition-all border-none outline-none cursor-pointer", bill.serviceMode === 'percent' ? "bg-slate-900 text-indigo-400" : "text-slate-500")}>%</button>
-                        <button onClick={() => handleServiceModeChange('amount')} className={cn("px-3 py-1 text-[10px] font-black rounded-lg transition-all border-none outline-none cursor-pointer", bill.serviceMode === 'amount' ? "bg-slate-900 text-indigo-400" : "text-slate-500")}>Rp</button>
+                        <button 
+                          onClick={() => handleServiceModeChange('percent')} 
+                          className={cn("px-2.5 py-1 text-[9px] font-black rounded-lg transition-all border-none outline-none cursor-pointer", bill.serviceMode === 'percent' ? "bg-slate-900 text-indigo-400 font-black shadow" : "text-slate-500")}
+                        >
+                          %
+                        </button>
+                        <button 
+                          onClick={() => handleServiceModeChange('amount')} 
+                          className={cn("px-2.5 py-1 text-[9px] font-black rounded-lg transition-all border-none outline-none cursor-pointer", bill.serviceMode === 'amount' ? "bg-slate-900 text-indigo-400 font-black shadow" : "text-slate-500")}
+                        >
+                          Rp
+                        </button>
                       </div>
                     </div>
                     {bill.serviceMode === 'percent' ? (
                       <div className="space-y-1">
-                        <input type="number" value={bill.serviceCharge === null || bill.serviceCharge === undefined ? '' : bill.serviceCharge} onChange={(e) => updateBill({ serviceCharge: parseFloat(e.target.value) || 0 })} className="w-full py-2 bg-slate-950/50 border border-slate-900 rounded-lg focus:border-indigo-500 outline-none px-3 font-bold text-sm text-white" placeholder="5" />
-                        <p className="text-[10px] text-slate-500 font-medium pl-1 font-numeric">≈ Rp {Math.round(receiptSubtotal * ((bill.serviceCharge || 0) / 100)).toLocaleString('id-ID')}</p>
+                        <input 
+                          type="number" 
+                          value={bill.serviceCharge === null || bill.serviceCharge === undefined ? '' : bill.serviceCharge} 
+                          onChange={(e) => updateBill({ serviceCharge: parseFloat(e.target.value) || 0 })} 
+                          className="w-full py-2 bg-slate-950/50 border border-slate-900 focus:border-indigo-500 rounded-lg outline-none px-3 font-bold text-xs text-white" 
+                          placeholder="5" 
+                        />
+                        <p className="text-[9px] text-slate-500 font-semibold pl-1 font-numeric">≈ Rp {Math.round(receiptSubtotal * ((bill.serviceCharge || 0) / 100)).toLocaleString('id-ID')}</p>
                       </div>
                     ) : (
                       <div className="space-y-1">
-                        <PriceInput value={bill.serviceCharge || 0} onChange={(val) => updateBill({ serviceCharge: val })} className="h-[38px] text-sm" />
-                        <p className="text-[10px] text-slate-500 font-medium pl-1 font-numeric">≈ {(receiptSubtotal > 0 ? ((bill.serviceCharge || 0) / receiptSubtotal) * 100 : 0).toFixed(1)}%</p>
+                        <PriceInput 
+                          value={bill.serviceCharge || 0} 
+                          onChange={(val) => updateBill({ serviceCharge: val })} 
+                          className="h-[36px] text-xs font-bold" 
+                        />
+                        <p className="text-[9px] text-slate-500 font-semibold pl-1 font-numeric">≈ {(receiptSubtotal > 0 ? ((bill.serviceCharge || 0) / receiptSubtotal) * 100 : 0).toFixed(1)}%</p>
                       </div>
                     )}
                   </div>
 
-                  {/* Tax */}
+                  {/* Tax / PB1 Toggle & input */}
                   <div>
                     <div className="flex justify-between items-center mb-2">
                       <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Tax / PB1</label>
                       <div className="flex bg-slate-950 p-0.5 rounded-lg border border-slate-900">
-                        <button onClick={() => handleTaxModeChange('percent')} className={cn("px-3 py-1 text-[10px] font-black rounded-lg transition-all border-none outline-none cursor-pointer", bill.taxMode === 'percent' ? "bg-slate-900 text-indigo-400" : "text-slate-500")}>%</button>
-                        <button onClick={() => handleTaxModeChange('amount')} className={cn("px-3 py-1 text-[10px] font-black rounded-lg transition-all border-none outline-none cursor-pointer", bill.taxMode === 'amount' ? "bg-slate-900 text-indigo-400" : "text-slate-500")}>Rp</button>
+                        <button 
+                          onClick={() => handleTaxModeChange('percent')} 
+                          className={cn("px-2.5 py-1 text-[9px] font-black rounded-lg transition-all border-none outline-none cursor-pointer", bill.taxMode === 'percent' ? "bg-slate-900 text-indigo-400 font-black shadow" : "text-slate-500")}
+                        >
+                          %
+                        </button>
+                        <button 
+                          onClick={() => handleTaxModeChange('amount')} 
+                          className={cn("px-2.5 py-1 text-[9px] font-black rounded-lg transition-all border-none outline-none cursor-pointer", bill.taxMode === 'amount' ? "bg-slate-900 text-indigo-400 font-black shadow" : "text-slate-500")}
+                        >
+                          Rp
+                        </button>
                       </div>
                     </div>
                     {bill.taxMode === 'percent' ? (
                       <div className="space-y-1">
-                        <input type="number" value={bill.tax === null || bill.tax === undefined ? '' : bill.tax} onChange={(e) => updateBill({ tax: parseFloat(e.target.value) || 0 })} className="w-full py-2 bg-slate-950/50 border border-slate-900 rounded-lg focus:border-indigo-500 outline-none px-3 font-bold text-sm text-white" placeholder="11" />
-                        <p className="text-[10px] text-slate-500 font-medium pl-1 font-numeric">≈ Rp {Math.round(receiptSubtotal * ((bill.tax || 0) / 100)).toLocaleString('id-ID')}</p>
+                        <input 
+                          type="number" 
+                          value={bill.tax === null || bill.tax === undefined ? '' : bill.tax} 
+                          onChange={(e) => updateBill({ tax: parseFloat(e.target.value) || 0 })} 
+                          className="w-full py-2 bg-slate-950/50 border border-slate-900 focus:border-indigo-500 rounded-lg outline-none px-3 font-bold text-xs text-white" 
+                          placeholder="11" 
+                        />
+                        <p className="text-[9px] text-slate-500 font-semibold pl-1 font-numeric">≈ Rp {Math.round(receiptSubtotal * ((bill.tax || 0) / 100)).toLocaleString('id-ID')}</p>
                       </div>
                     ) : (
                       <div className="space-y-1">
-                        <PriceInput value={bill.tax || 0} onChange={(val) => updateBill({ tax: val })} className="h-[38px] text-sm" />
-                        <p className="text-[10px] text-slate-500 font-medium pl-1 font-numeric">≈ {(receiptSubtotal > 0 ? ((bill.tax || 0) / receiptSubtotal) * 100 : 0).toFixed(1)}%</p>
+                        <PriceInput 
+                          value={bill.tax || 0} 
+                          onChange={(val) => updateBill({ tax: val })} 
+                          className="h-[36px] text-xs font-bold" 
+                        />
+                        <p className="text-[9px] text-slate-500 font-semibold pl-1 font-numeric">≈ {(receiptSubtotal > 0 ? ((bill.tax || 0) / receiptSubtotal) * 100 : 0).toFixed(1)}%</p>
                       </div>
                     )}
                   </div>
                 </div>
 
-                <div className="flex justify-between items-center pt-2 font-numeric">
-                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Calculated Ledger Grand Total</span>
-                  <span className="text-xl font-black text-indigo-400">Rp {receiptGrandTotal.toLocaleString('id-ID')}</span>
+                {/* Bottom summary and CTA card */}
+                <div className="flex flex-col md:flex-row justify-between items-center gap-4 pt-1">
+                  <div className="text-center md:text-left self-stretch md:self-auto font-numeric">
+                    <span className="text-[8px] font-black text-slate-500 uppercase tracking-[0.2em] block mb-1">Calculated Ledger Grand Total</span>
+                    <span className="text-2xl font-black text-white flex items-center justify-center md:justify-start gap-1">
+                      <span className="text-xs text-slate-500 font-semibold">Rp</span>
+                      {receiptGrandTotal.toLocaleString('id-ID')}
+                    </span>
+                  </div>
+
+                  {/* Primary sticky CTA button */}
+                  <button
+                    onClick={() => setStep(3)}
+                    className="w-full md:w-auto px-8 py-4 bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 hover:from-indigo-500 hover:via-purple-500 hover:to-indigo-500 text-white rounded-xl font-extrabold text-xs shadow-xl shadow-indigo-600/20 hover:shadow-indigo-600/35 transition-all duration-300 flex items-center justify-center gap-2 border-none cursor-pointer outline-none transform active:scale-[0.99] tracking-wider"
+                  >
+                    Next: Add People
+                    <Icon name="arrow_forward" className="text-xs font-bold" />
+                  </button>
                 </div>
               </div>
             </div>
@@ -1156,7 +1524,7 @@ export default function App() {
         const { persons, items } = bill;
         const totalBillSubtotal = items.reduce((sum, item) => sum + item.price, 0);
         const payerName = persons.find(p => p.id === bill.payerId)?.name || 'None selected';
-        
+
         return (
           <div className="flex flex-col gap-6 flex-1 min-h-0 w-full text-slate-200">
             {/* Bento Grid Header */}
@@ -1289,7 +1657,7 @@ export default function App() {
                                 <td className="px-6 py-4 sticky left-0 bg-[#070b19] group-hover:bg-[#0c1228] z-10 transition-colors font-bold text-white truncate max-w-[200px]">{item.name || 'Unnamed Item'}</td>
                                 <td className="px-6 py-4 text-right text-slate-400">Rp {item.price.toLocaleString('id-ID')}</td>
                                 <td className="px-6 py-4 text-center">
-                                  <input 
+                                  <input
                                     type="checkbox"
                                     checked={isShared}
                                     onChange={() => {
@@ -1306,7 +1674,7 @@ export default function App() {
                                 </td>
                                 {persons.map(p => (
                                   <td key={p.id} className="px-4 py-4 text-center">
-                                    <input 
+                                    <input
                                       type="checkbox"
                                       checked={assignments[p.id]?.[item.id] || false}
                                       onChange={() => toggleAssignment(p.id, item.id)}
@@ -1343,7 +1711,7 @@ export default function App() {
                               <span className="text-xs font-black text-indigo-400">Rp {allocatedAmount.toLocaleString('id-ID')}</span>
                             </div>
                             <div className="flex items-center gap-4">
-                              <input 
+                              <input
                                 type="range"
                                 min="0"
                                 max="100"
@@ -1355,7 +1723,7 @@ export default function App() {
                                 className="flex-1 accent-indigo-500 h-1.5 bg-slate-900 rounded-lg appearance-none cursor-pointer"
                               />
                               <div className="w-16 relative">
-                                <input 
+                                <input
                                   type="number"
                                   min="0"
                                   max="100"
@@ -1393,7 +1761,7 @@ export default function App() {
                             <span className="text-xs font-bold text-white">{p.name || 'Unnamed'}</span>
                             <div className="w-44 relative">
                               <span className="absolute left-3 top-2.5 text-[9px] font-black text-slate-600">Rp</span>
-                              <input 
+                              <input
                                 type="number"
                                 value={currentAmount === 0 ? '' : currentAmount}
                                 onChange={(e) => {
@@ -1433,12 +1801,12 @@ export default function App() {
             </div>
           </div>
         );
-      }       case 5: {
+      } case 5: {
         const totalGrand = personTotals.reduce((sum, p) => sum + p.total, 0);
         const totalTaxAndService = totalGrand - receiptSubtotal;
 
         return (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -15 }}
@@ -1450,7 +1818,7 @@ export default function App() {
               <div className="bg-gradient-to-br from-[#0c122c] to-[#050714] border border-slate-900 rounded-3xl p-8 relative overflow-hidden shadow-2xl">
                 <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Grand Total Settlement</span>
                 <h3 className="text-5xl font-black text-white font-numeric tracking-tight mb-6">Rp {totalGrand.toLocaleString('id-ID')}</h3>
-                
+
                 <div className="grid grid-cols-2 gap-6 pt-6 border-t border-slate-900/60 font-numeric">
                   <div>
                     <span className="text-[9px] font-black text-slate-500 uppercase tracking-wider block mb-1">Subtotal</span>
@@ -1535,20 +1903,20 @@ export default function App() {
                     {/* Receiving inputs */}
                     <div className="bg-slate-950/40 border border-slate-900 p-4 rounded-xl space-y-3">
                       <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block">Update Transfer Details</span>
-                      
+
                       <div className="relative">
                         <Icon name="account_balance" className="absolute left-3 top-2.5 text-slate-500 text-xs" />
-                        <input 
+                        <input
                           placeholder="Bank Name (e.g. BCA, Mandiri)"
                           value={bill.persons.find(p => p.id === bill.payerId)?.paymentInfo?.bank || ''}
                           onChange={(e) => updatePerson(bill.payerId, { paymentInfo: { bank: e.target.value } })}
                           className="w-full pl-9 pr-3 py-2.5 text-xs bg-slate-950 border border-slate-900 rounded-lg focus:border-indigo-500 outline-none text-white font-bold"
                         />
                       </div>
-                      
+
                       <div className="relative">
                         <Icon name="credit_card" className="absolute left-3 top-2.5 text-slate-500 text-xs" />
-                        <input 
+                        <input
                           placeholder="Account Number"
                           value={bill.persons.find(p => p.id === bill.payerId)?.paymentInfo?.accountNumber || ''}
                           onChange={(e) => updatePerson(bill.payerId, { paymentInfo: { accountNumber: e.target.value } })}
@@ -1575,11 +1943,11 @@ export default function App() {
                     onClick={async () => {
                       try {
                         await completeBill('draft');
-                        alert('Ledger saved as a Draft on SplitMate Dashboard!');
-                        setActiveTab('dashboard');
+                        setSaveFeedback('Saved as draft successfully!');
+                        setTimeout(() => { setSaveFeedback(null); setActiveTab('dashboard'); }, 1500);
                       } catch (err) {
-                        alert('Saved to local history draft.');
-                        setActiveTab('dashboard');
+                        setSaveFeedback('Saved to local draft.');
+                        setTimeout(() => { setSaveFeedback(null); setActiveTab('dashboard'); }, 1500);
                       }
                     }}
                     className="py-3.5 bg-slate-950 hover:bg-slate-900 border border-slate-900 hover:border-slate-800 text-slate-400 rounded-xl font-extrabold text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer outline-none"
@@ -1593,11 +1961,11 @@ export default function App() {
                     onClick={async () => {
                       try {
                         await completeBill('pending');
-                        alert('Split ledger finalized and posted successfully!');
-                        setActiveTab('dashboard');
+                        setSaveFeedback('Split ledger finalized and saved!');
+                        setTimeout(() => { setSaveFeedback(null); setActiveTab('dashboard'); }, 1500);
                       } catch (err) {
-                        alert('Saved to history database.');
-                        setActiveTab('dashboard');
+                        setSaveFeedback('Saved to local history.');
+                        setTimeout(() => { setSaveFeedback(null); setActiveTab('dashboard'); }, 1500);
                       }
                     }}
                     className="py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white border-none rounded-xl font-extrabold text-xs shadow-lg shadow-indigo-600/20 transition-all flex items-center justify-center gap-1.5 cursor-pointer outline-none"
@@ -1617,11 +1985,11 @@ export default function App() {
                     }
                     const otherTotals = personTotals.filter(p => p.id !== bill.payerId && p.total > 0);
                     const totalToReceive = totalGrand - (personTotals.find(p => p.id === bill.payerId)?.total || 0);
-                    
-                    const message = `✨ *SplitMate Premium Settlement: ${bill.title || 'Untitled Ledger'}* ✨\n\n` + 
+
+                    const message = `✨ *SplitMate Premium Settlement: ${bill.title || 'Untitled Ledger'}* ✨\n\n` +
                       `Total to Settle: *Rp ${totalToReceive.toLocaleString('id-ID')}*\n` +
                       `━━━━━━━━━━━━━━━━━━━━\n\n` +
-                      otherTotals.map(p => `💸 *${p.name}*: Rp ${p.total.toLocaleString('id-ID')}`).join('\n') + 
+                      otherTotals.map(p => `💸 *${p.name}*: Rp ${p.total.toLocaleString('id-ID')}`).join('\n') +
                       `\n\n━━━━━━━━━━━━━━━━━━━━\n` +
                       `🏦 *Transfer to ${payer.name}*\n` +
                       `• ${payer.paymentInfo?.bank || 'Bank (TBD)'}: ${payer.paymentInfo?.accountNumber || 'Account (TBD)'}\n\n` +
@@ -1700,7 +2068,7 @@ export default function App() {
         ];
 
         return (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
             className="flex-1 overflow-y-auto p-8 space-y-8 bg-[#030712] text-slate-100 font-inter hide-scrollbar"
@@ -1712,7 +2080,7 @@ export default function App() {
                 <p className="text-slate-500 text-xs font-semibold mt-1 uppercase tracking-wider">SplitMate SaaS Platform</p>
               </div>
               <div className="flex items-center gap-3">
-                <button 
+                <button
                   onClick={() => { setActiveTab('bills'); setStep(1); }}
                   className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold text-xs shadow-lg shadow-indigo-600/20 hover:shadow-indigo-600/30 transition-all flex items-center gap-2 border-none outline-none cursor-pointer"
                 >
@@ -1780,10 +2148,10 @@ export default function App() {
 
             {/* 12-Column Grid Sections */}
             <div className="grid grid-cols-12 gap-8">
-              
+
               {/* Left Column (8-col): Trend Chart, Categories, Timeline */}
               <div className="col-span-12 lg:col-span-8 space-y-8">
-                
+
                 {/* 1. Expense Trend Line Chart */}
                 <div className="bg-[#070b19] border border-slate-900 rounded-2xl p-6 relative overflow-hidden">
                   <div className="flex justify-between items-center mb-6">
@@ -1804,19 +2172,19 @@ export default function App() {
                     <svg className="w-full h-full overflow-visible" viewBox="0 0 500 150" preserveAspectRatio="none">
                       <defs>
                         <linearGradient id="chartGlow" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#6366f1" stopOpacity="0.25"/>
-                          <stop offset="100%" stopColor="#6366f1" stopOpacity="0"/>
+                          <stop offset="0%" stopColor="#6366f1" stopOpacity="0.25" />
+                          <stop offset="100%" stopColor="#6366f1" stopOpacity="0" />
                         </linearGradient>
                         <linearGradient id="secondaryGlow" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#a855f7" stopOpacity="0.15"/>
-                          <stop offset="100%" stopColor="#a855f7" stopOpacity="0"/>
+                          <stop offset="0%" stopColor="#a855f7" stopOpacity="0.15" />
+                          <stop offset="100%" stopColor="#a855f7" stopOpacity="0" />
                         </linearGradient>
                       </defs>
                       {/* Grid lines */}
                       <line x1="0" y1="25" x2="500" y2="25" stroke="#0f172a" strokeDasharray="3 3" strokeWidth="1" />
                       <line x1="0" y1="75" x2="500" y2="75" stroke="#0f172a" strokeDasharray="3 3" strokeWidth="1" />
                       <line x1="0" y1="125" x2="500" y2="125" stroke="#0f172a" strokeDasharray="3 3" strokeWidth="1" />
-                      
+
                       {/* Line 1 - Spending */}
                       <path
                         d="M 0 130 C 50 120, 100 60, 150 70 C 200 80, 250 30, 300 40 C 350 50, 400 90, 450 65 C 475 52, 500 20, 500 20"
@@ -1863,7 +2231,7 @@ export default function App() {
                     <span className="w-1.5 h-3 bg-emerald-500 rounded-full inline-block"></span>
                     Category Distribution
                   </h3>
-                  
+
                   <div className="flex flex-col md:flex-row items-center justify-around gap-8 py-4">
                     <div className="relative w-36 h-36 flex items-center justify-center">
                       <svg className="w-full h-full transform -rotate-90" viewBox="0 0 42 42">
@@ -1922,12 +2290,12 @@ export default function App() {
                     <span className="w-1.5 h-3 bg-purple-500 rounded-full inline-block"></span>
                     Recent Activity Timeline
                   </h3>
-                  
+
                   <div className="space-y-4">
                     {completedBills.length > 0 ? (
                       completedBills.map((item) => (
-                        <div 
-                          key={item.id} 
+                        <div
+                          key={item.id}
                           onClick={() => setSelectedBillId(item.id)}
                           className="flex items-center justify-between p-4 bg-slate-950/40 border border-slate-900/50 hover:border-indigo-500/20 rounded-xl transition-all group cursor-pointer"
                         >
@@ -1946,8 +2314,8 @@ export default function App() {
                             <p className="font-black text-slate-200 font-numeric text-sm">Rp {item.grandTotal.toLocaleString('id-ID')}</p>
                             <span className={cn(
                               "text-[8px] font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider mt-1.5 inline-block border",
-                              item.status === 'completed' 
-                                ? "bg-green-950/30 text-green-400 border-green-900/30" 
+                              item.status === 'completed'
+                                ? "bg-green-950/30 text-green-400 border-green-900/30"
                                 : item.status === 'draft'
                                   ? "bg-indigo-950/30 text-indigo-400 border-indigo-900/30"
                                   : "bg-amber-950/30 text-amber-400 border-amber-900/30"
@@ -1973,7 +2341,7 @@ export default function App() {
 
               {/* Right Column (4-col): Quick Actions, Owed, You Owe, Smart Insights */}
               <div className="col-span-12 lg:col-span-4 space-y-8">
-                
+
                 {/* 7. Quick Actions Panel */}
                 <div className="bg-[#070b19] border border-slate-900 rounded-2xl p-6 relative overflow-hidden">
                   <h3 className="font-black text-sm text-white uppercase tracking-wider flex items-center gap-2 mb-4">
@@ -1988,7 +2356,7 @@ export default function App() {
                       <Icon name="add" className="text-lg text-indigo-400 group-hover:scale-110 transition-transform" />
                       <span className="text-[10px] font-bold text-slate-300">New Bill</span>
                     </button>
-                    
+
                     <button
                       onClick={() => { setActiveTab('bills'); setStep(1); }}
                       className="p-3 bg-slate-950/40 border border-slate-900 hover:border-emerald-500/30 hover:bg-slate-900/40 rounded-xl flex flex-col items-center justify-center text-center gap-2 transition-all cursor-pointer outline-none group"
@@ -1996,7 +2364,7 @@ export default function App() {
                       <Icon name="document_scanner" className="text-lg text-emerald-400 group-hover:scale-110 transition-transform" />
                       <span className="text-[10px] font-bold text-slate-300">Scan Receipt</span>
                     </button>
-                    
+
                     <button
                       onClick={() => alert("Quick Settle initiated! Choose an active pending bill from the Recent Activity list below to confirm payment.")}
                       className="p-3 bg-slate-950/40 border border-slate-900 hover:border-amber-500/30 hover:bg-slate-900/40 rounded-xl flex flex-col items-center justify-center text-center gap-2 transition-all cursor-pointer outline-none group"
@@ -2136,7 +2504,7 @@ export default function App() {
       ];
 
       return (
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 15 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -15 }}
@@ -2187,8 +2555,8 @@ export default function App() {
                       onClick={() => setSettingsTab(tab.id)}
                       className={cn(
                         "w-full px-4 py-3 rounded-xl text-left text-xs font-extrabold flex items-center gap-3 transition-all cursor-pointer border-none outline-none relative overflow-hidden",
-                        isActive 
-                          ? "bg-indigo-650/30 text-indigo-400 border border-indigo-900/40 shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)]" 
+                        isActive
+                          ? "bg-indigo-650/30 text-indigo-400 border border-indigo-900/40 shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)]"
                           : "text-slate-500 hover:text-slate-300 hover:bg-slate-950/40 border border-transparent"
                       )}
                     >
@@ -2210,7 +2578,7 @@ export default function App() {
                 <h4 className="text-xs font-black text-white truncate">{profileForm.name}</h4>
                 <p className="text-[9px] text-slate-500 font-extrabold uppercase tracking-widest mt-1">SplitMate Free Tier</p>
                 <div className="mt-4 pt-4 border-t border-slate-950">
-                  <button 
+                  <button
                     onClick={() => setSettingsTab('billing')}
                     className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-[10px] uppercase tracking-widest rounded-xl transition-all border-none outline-none cursor-pointer shadow-md hover:shadow-indigo-600/20"
                   >
@@ -2224,7 +2592,7 @@ export default function App() {
             <div className="col-span-12 lg:col-span-9">
               <div className="bg-[#070b19] border border-slate-900 rounded-2xl p-6 relative overflow-hidden shadow-premium min-h-[500px] flex flex-col justify-between">
                 <div className="absolute top-0 left-0 w-full h-1 bg-indigo-600/30"></div>
-                
+
                 <div className="flex-1">
                   {/* Account Tab Content */}
                   {settingsTab === 'account' && (
@@ -2259,7 +2627,7 @@ export default function App() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="relative group">
                           <label className="absolute -top-2 left-3 px-1 bg-[#070b19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">Display Name</label>
-                          <input 
+                          <input
                             value={profileForm.name}
                             onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
                             className="w-full px-4 py-3 bg-slate-950/40 border border-slate-900 rounded-xl focus:border-indigo-500 outline-none text-xs font-bold text-white transition-all placeholder-slate-700"
@@ -2269,7 +2637,7 @@ export default function App() {
 
                         <div className="relative group">
                           <label className="absolute -top-2 left-3 px-1 bg-[#070b19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">Email Address</label>
-                          <input 
+                          <input
                             value={profileForm.email}
                             onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
                             className="w-full px-4 py-3 bg-slate-950/40 border border-slate-900 rounded-xl focus:border-indigo-500 outline-none text-xs font-bold text-white transition-all placeholder-slate-700"
@@ -2279,7 +2647,7 @@ export default function App() {
 
                         <div className="relative group">
                           <label className="absolute -top-2 left-3 px-1 bg-[#070b19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">WhatsApp / Phone</label>
-                          <input 
+                          <input
                             value={profileForm.phone}
                             onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
                             className="w-full px-4 py-3 bg-slate-950/40 border border-slate-900 rounded-xl focus:border-indigo-500 outline-none text-xs font-bold text-white transition-all placeholder-slate-700"
@@ -2289,7 +2657,7 @@ export default function App() {
 
                         <div className="relative group">
                           <label className="absolute -top-2 left-3 px-1 bg-[#070b19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">System Timezone</label>
-                          <select 
+                          <select
                             value={profileForm.timezone}
                             onChange={(e) => setProfileForm({ ...profileForm, timezone: e.target.value })}
                             className="w-full px-4 py-3.5 bg-slate-950/40 border border-slate-900 rounded-xl focus:border-indigo-500 outline-none text-xs font-bold text-white transition-all cursor-pointer"
@@ -2303,7 +2671,7 @@ export default function App() {
 
                         <div className="relative group">
                           <label className="absolute -top-2 left-3 px-1 bg-[#070b19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">System Language</label>
-                          <select 
+                          <select
                             value={profileForm.language}
                             onChange={(e) => setProfileForm({ ...profileForm, language: e.target.value })}
                             className="w-full px-4 py-3.5 bg-slate-950/40 border border-slate-900 rounded-xl focus:border-indigo-500 outline-none text-xs font-bold text-white transition-all cursor-pointer"
@@ -2336,7 +2704,7 @@ export default function App() {
                             <p className="font-bold text-white">Dark Mode Forced Theme</p>
                             <p className="text-[10px] text-slate-500">Enable high-contrast dark mode display center.</p>
                           </div>
-                          <div 
+                          <div
                             onClick={() => {
                               const newMode = !settings.darkMode;
                               updateSettings({ darkMode: newMode });
@@ -2347,7 +2715,7 @@ export default function App() {
                               settings.darkMode ? "bg-indigo-600" : "bg-slate-200 dark:bg-slate-700"
                             )}
                           >
-                            <motion.div 
+                            <motion.div
                               layout
                               animate={{ x: settings.darkMode ? 28 : 4 }}
                               transition={{ type: "spring", stiffness: 500, damping: 30 }}
@@ -2362,14 +2730,14 @@ export default function App() {
                             <p className="font-bold text-white">Liquid Animations</p>
                             <p className="text-[10px] text-slate-500">Fluid spring animations and premium micro-interactions.</p>
                           </div>
-                          <div 
+                          <div
                             onClick={() => updateSettings({ animations: !settings.animations })}
                             className={cn(
                               "w-12 h-6 rounded-full relative cursor-pointer transition-colors duration-300",
                               settings.animations ? "bg-indigo-600" : "bg-slate-200 dark:bg-slate-700"
                             )}
                           >
-                            <motion.div 
+                            <motion.div
                               layout
                               animate={{ x: settings.animations ? 28 : 4 }}
                               transition={{ type: "spring", stiffness: 500, damping: 30 }}
@@ -2384,14 +2752,14 @@ export default function App() {
                             <p className="font-bold text-white">Whole Number Rounding</p>
                             <p className="text-[10px] text-slate-500">Automatically round fractions for neat IDR balances.</p>
                           </div>
-                          <div 
+                          <div
                             onClick={() => updateSettings({ roundNumbers: !settings.roundNumbers })}
                             className={cn(
                               "w-12 h-6 rounded-full relative cursor-pointer transition-colors duration-300",
                               settings.roundNumbers ? "bg-indigo-600" : "bg-slate-200 dark:bg-slate-700"
                             )}
                           >
-                            <motion.div 
+                            <motion.div
                               layout
                               animate={{ x: settings.roundNumbers ? 28 : 4 }}
                               transition={{ type: "spring", stiffness: 500, damping: 30 }}
@@ -2406,7 +2774,7 @@ export default function App() {
                             <p className="font-bold text-white">Primary Currency Display</p>
                             <p className="text-[10px] text-slate-500">Preferred standard currency format across all ledgers.</p>
                           </div>
-                          <select 
+                          <select
                             value={settings.currency || 'IDR'}
                             onChange={(e) => updateSettings({ currency: e.target.value })}
                             className="bg-slate-950 border border-slate-900 rounded-lg px-3 py-1.5 text-xs font-bold outline-none ring-indigo-500/20 focus-visible:ring-2 cursor-pointer text-slate-200"
@@ -2439,7 +2807,7 @@ export default function App() {
                             <p className="font-bold text-white">Default Split Strategy</p>
                             <p className="text-[10px] text-slate-500">Default strategy loaded at the start of step 4.</p>
                           </div>
-                          <select 
+                          <select
                             value={settings.defaultSplitMode || 'equal'}
                             onChange={(e) => updateSettings({ defaultSplitMode: e.target.value })}
                             className="bg-slate-950 border border-slate-900 rounded-lg px-3 py-1.5 text-xs font-bold outline-none cursor-pointer text-slate-200"
@@ -2457,7 +2825,7 @@ export default function App() {
                             <p className="font-bold text-white">Tax Allocation Rule</p>
                             <p className="text-[10px] text-slate-500">Determine how Tax / PB1 is distributed to participants.</p>
                           </div>
-                          <select 
+                          <select
                             value={settings.taxAllocation || 'proportionate'}
                             onChange={(e) => updateSettings({ taxAllocation: e.target.value })}
                             className="bg-slate-950 border border-slate-900 rounded-lg px-3 py-1.5 text-xs font-bold outline-none cursor-pointer text-slate-200"
@@ -2473,7 +2841,7 @@ export default function App() {
                             <p className="font-bold text-white">Service Charge Handling</p>
                             <p className="text-[10px] text-slate-500">Determine how service charges are split.</p>
                           </div>
-                          <select 
+                          <select
                             value={settings.serviceChargeHandling || 'proportionate'}
                             onChange={(e) => updateSettings({ serviceChargeHandling: e.target.value })}
                             className="bg-slate-950 border border-slate-900 rounded-lg px-3 py-1.5 text-xs font-bold outline-none cursor-pointer text-slate-200"
@@ -2489,14 +2857,14 @@ export default function App() {
                             <p className="font-bold text-white">Auto-Save Ledger Drafts</p>
                             <p className="text-[10px] text-slate-500">Automatically save current ledger drafts before finalizing splits.</p>
                           </div>
-                          <div 
+                          <div
                             onClick={() => updateSettings({ autoSaveDraft: settings.autoSaveDraft === undefined ? false : !settings.autoSaveDraft })}
                             className={cn(
                               "w-12 h-6 rounded-full relative cursor-pointer transition-colors duration-300",
                               settings.autoSaveDraft !== false ? "bg-indigo-600" : "bg-slate-200 dark:bg-slate-700"
                             )}
                           >
-                            <motion.div 
+                            <motion.div
                               layout
                               animate={{ x: settings.autoSaveDraft !== false ? 28 : 4 }}
                               transition={{ type: "spring", stiffness: 500, damping: 30 }}
@@ -2511,14 +2879,14 @@ export default function App() {
                             <p className="font-bold text-white">AI OCR Auto-Scan</p>
                             <p className="text-[10px] text-slate-500">Instantly trigger AI scanner on uploading image receipts.</p>
                           </div>
-                          <div 
+                          <div
                             onClick={() => updateSettings({ autoScan: !settings.autoScan })}
                             className={cn(
                               "w-12 h-6 rounded-full relative cursor-pointer transition-colors duration-300",
                               settings.autoScan ? "bg-indigo-600" : "bg-slate-200 dark:bg-slate-700"
                             )}
                           >
-                            <motion.div 
+                            <motion.div
                               layout
                               animate={{ x: settings.autoScan ? 28 : 4 }}
                               transition={{ type: "spring", stiffness: 500, damping: 30 }}
@@ -2548,14 +2916,14 @@ export default function App() {
                             <p className="font-bold text-white">WhatsApp Settle Reminders</p>
                             <p className="text-[10px] text-slate-500">Allow generating single-click direct WhatsApp text instructions.</p>
                           </div>
-                          <div 
+                          <div
                             onClick={() => updateSettings({ whatsappReminders: settings.whatsappReminders === undefined ? true : !settings.whatsappReminders })}
                             className={cn(
                               "w-12 h-6 rounded-full relative cursor-pointer transition-colors duration-300",
                               settings.whatsappReminders !== false ? "bg-indigo-600" : "bg-slate-200 dark:bg-slate-700"
                             )}
                           >
-                            <motion.div 
+                            <motion.div
                               layout
                               animate={{ x: settings.whatsappReminders !== false ? 28 : 4 }}
                               transition={{ type: "spring", stiffness: 500, damping: 30 }}
@@ -2570,14 +2938,14 @@ export default function App() {
                             <p className="font-bold text-white">Active Settlement Reminders</p>
                             <p className="text-[10px] text-slate-500">Receive in-app alerts when a participant settles their outstanding share.</p>
                           </div>
-                          <div 
+                          <div
                             onClick={() => updateSettings({ settlementReminders: settings.settlementReminders !== false })}
                             className={cn(
                               "w-12 h-6 rounded-full relative cursor-pointer transition-colors duration-300",
                               settings.settlementReminders !== false ? "bg-indigo-600" : "bg-slate-200 dark:bg-slate-700"
                             )}
                           >
-                            <motion.div 
+                            <motion.div
                               layout
                               animate={{ x: settings.settlementReminders !== false ? 28 : 4 }}
                               transition={{ type: "spring", stiffness: 500, damping: 30 }}
@@ -2592,14 +2960,14 @@ export default function App() {
                             <p className="font-bold text-white">Payment Due Alerts</p>
                             <p className="text-[10px] text-slate-500">Receive notifications when outbound splits approach set deadlines.</p>
                           </div>
-                          <div 
+                          <div
                             onClick={() => updateSettings({ paymentDueAlerts: settings.paymentDueAlerts === undefined ? true : !settings.paymentDueAlerts })}
                             className={cn(
                               "w-12 h-6 rounded-full relative cursor-pointer transition-colors duration-300",
                               settings.paymentDueAlerts !== false ? "bg-indigo-600" : "bg-slate-200 dark:bg-slate-700"
                             )}
                           >
-                            <motion.div 
+                            <motion.div
                               layout
                               animate={{ x: settings.paymentDueAlerts !== false ? 28 : 4 }}
                               transition={{ type: "spring", stiffness: 500, damping: 30 }}
@@ -2614,14 +2982,14 @@ export default function App() {
                             <p className="font-bold text-white">Weekly Digest Reports</p>
                             <p className="text-[10px] text-slate-500">Get rich summaries of split flows, balances, and savings via email.</p>
                           </div>
-                          <div 
+                          <div
                             onClick={() => updateSettings({ emailNotifications: settings.emailNotifications === undefined ? true : !settings.emailNotifications })}
                             className={cn(
                               "w-12 h-6 rounded-full relative cursor-pointer transition-colors duration-300",
                               settings.emailNotifications !== false ? "bg-indigo-600" : "bg-slate-200 dark:bg-slate-700"
                             )}
                           >
-                            <motion.div 
+                            <motion.div
                               layout
                               animate={{ x: settings.emailNotifications !== false ? 28 : 4 }}
                               transition={{ type: "spring", stiffness: 500, damping: 30 }}
@@ -2689,9 +3057,9 @@ export default function App() {
                         <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl animate-pulse" />
                         <h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-1.5">★ Upgrade to SplitMate Pro</h4>
                         <h3 className="text-lg font-black text-white leading-tight mb-2">Unlock Unlimited Receipt Scans & Advanced Group Financial Intelligence</h3>
-                        
+
                         <ul className="space-y-1.5 text-[10px] text-slate-400 font-semibold mb-6 mt-4">
-                          <li className="flex items-center gap-2"><Icon name="check" className="text-indigo-400 text-xs" /> Unlimited live Gemini OCR receipt scanning</li>
+                          <li className="flex items-center gap-2"><Icon name="check" className="text-indigo-400 text-xs" /> Unlimited live AI OCR receipt scanning</li>
                           <li className="flex items-center gap-2"><Icon name="check" className="text-indigo-400 text-xs" /> High-fidelity PDF & Excel reports exports</li>
                           <li className="flex items-center gap-2"><Icon name="check" className="text-indigo-400 text-xs" /> Direct automated WhatsApp settlements reminding API</li>
                           <li className="flex items-center gap-2"><Icon name="check" className="text-indigo-400 text-xs" /> Advanced group spending statistics and CSV tools</li>
@@ -2724,7 +3092,7 @@ export default function App() {
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                           <div className="relative group">
                             <label className="absolute -top-2 left-3 px-1 bg-[#070b19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">Current Password</label>
-                            <input 
+                            <input
                               type="password"
                               value={securityForm.currentPassword}
                               onChange={(e) => setSecurityForm({ ...securityForm, currentPassword: e.target.value })}
@@ -2734,7 +3102,7 @@ export default function App() {
 
                           <div className="relative group">
                             <label className="absolute -top-2 left-3 px-1 bg-[#070b19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">New Password</label>
-                            <input 
+                            <input
                               type="password"
                               value={securityForm.newPassword}
                               onChange={(e) => setSecurityForm({ ...securityForm, newPassword: e.target.value })}
@@ -2744,7 +3112,7 @@ export default function App() {
 
                           <div className="relative group">
                             <label className="absolute -top-2 left-3 px-1 bg-[#070b19] text-[9px] font-black text-indigo-400 uppercase tracking-widest z-10">Confirm Password</label>
-                            <input 
+                            <input
                               type="password"
                               value={securityForm.confirmPassword}
                               onChange={(e) => setSecurityForm({ ...securityForm, confirmPassword: e.target.value })}
@@ -2753,7 +3121,7 @@ export default function App() {
                           </div>
                         </div>
                         <div className="flex justify-end pt-2">
-                          <button 
+                          <button
                             onClick={handleSaveSettings}
                             className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-[9px] uppercase tracking-wider rounded-lg transition-all border border-slate-800 cursor-pointer outline-none"
                           >
@@ -2768,14 +3136,14 @@ export default function App() {
                           <p className="text-xs font-bold text-white">Two-Factor Authentication (2FA)</p>
                           <p className="text-[10px] text-slate-500">Protect account credentials with standard verification codes.</p>
                         </div>
-                        <div 
+                        <div
                           onClick={() => setSecurityForm({ ...securityForm, twoFactorEnabled: !securityForm.twoFactorEnabled })}
                           className={cn(
                             "w-12 h-6 rounded-full relative cursor-pointer transition-colors duration-300",
                             securityForm.twoFactorEnabled ? "bg-indigo-600" : "bg-slate-200 dark:bg-slate-700"
                           )}
                         >
-                          <motion.div 
+                          <motion.div
                             layout
                             animate={{ x: securityForm.twoFactorEnabled ? 28 : 4 }}
                             transition={{ type: "spring", stiffness: 500, damping: 30 }}
@@ -2804,7 +3172,7 @@ export default function App() {
                                   </div>
                                 </div>
                                 {!s.active && (
-                                  <button 
+                                  <button
                                     onClick={() => handleRevokeSession(s.id)}
                                     className="px-2.5 py-1 text-[9px] font-black text-rose-400 hover:text-rose-300 bg-rose-950/10 hover:bg-rose-950/30 border border-rose-900/30 rounded transition-all cursor-pointer outline-none"
                                   >
@@ -2834,14 +3202,14 @@ export default function App() {
 
                       <div className="p-6 bg-red-950/10 border border-red-900/30 rounded-2xl space-y-6 relative overflow-hidden">
                         <div className="absolute top-0 right-0 w-32 h-32 bg-rose-500/5 rounded-full blur-3xl" />
-                        
+
                         {/* Revoke All Sessions */}
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 pb-6 border-b border-red-900/10">
                           <div>
                             <h4 className="text-xs font-bold text-white">Revoke All Other Sessions</h4>
                             <p className="text-[10px] text-slate-500 font-medium">Instantly log out from all devices, browsers, and mobile platforms except this session.</p>
                           </div>
-                          <button 
+                          <button
                             onClick={() => {
                               setSessions(prev => prev.filter(s => s.active));
                               setSaveFeedback('Other device sessions revoked.');
@@ -2859,7 +3227,7 @@ export default function App() {
                             <h4 className="text-xs font-bold text-rose-400">Permanently Delete Account</h4>
                             <p className="text-[10px] text-slate-500 font-medium">Wipe your profile information, payment configuration, scan statistics, and split history forever.</p>
                           </div>
-                          <button 
+                          <button
                             onClick={() => {
                               if (confirm('CAUTION: Are you absolutely sure you want to permanently delete your SplitMate account? This action is irreversible.')) {
                                 logout();
@@ -2887,8 +3255,8 @@ export default function App() {
                       disabled={isSavingSettings}
                       className={cn(
                         "px-6 py-3 rounded-xl font-extrabold text-xs transition-all flex items-center justify-center gap-2 border-none outline-none cursor-pointer",
-                        isSavingSettings 
-                          ? "bg-slate-900 text-slate-500 cursor-not-allowed" 
+                        isSavingSettings
+                          ? "bg-slate-900 text-slate-500 cursor-not-allowed"
                           : "bg-indigo-600 text-white hover:bg-indigo-500 shadow-lg shadow-indigo-600/25 active:scale-98"
                       )}
                     >
@@ -2915,8 +3283,8 @@ export default function App() {
 
     return (
       <div className="p-8 flex-1 overflow-y-auto flex flex-col gap-6">
-        <StepHeader 
-          currentStep={step} 
+        <StepHeader
+          currentStep={step}
           setStep={setStep}
           bill={bill}
           isScanning={isScanning}

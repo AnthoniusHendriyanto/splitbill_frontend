@@ -1,5 +1,6 @@
 import { API } from '../config/api';
 import useAuthStore from '../store/useAuthStore';
+import { getErrorMessage } from '../utils/errors';
 
 const authBase = `${API.base}/api/v1/auth`;
 const billsBase = `${API.base}/api/v1/bills`;
@@ -64,7 +65,7 @@ async function request(path, options = {}) {
       
       if (!retryRes.ok) {
         const err = await retryRes.json().catch(() => ({}));
-        throw new Error(err?.error?.message || `HTTP ${retryRes.status}`);
+        throw new Error(getErrorMessage(err));
       }
       
       return retryRes.status === 204 ? null : retryRes.json();
@@ -77,7 +78,7 @@ async function request(path, options = {}) {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `HTTP ${res.status}`);
+    throw new Error(getErrorMessage(err));
   }
 
   return res.status === 204 ? null : res.json();
@@ -150,7 +151,7 @@ export const api = {
         });
         if (!retryRes.ok) {
           const err = await retryRes.json().catch(() => ({}));
-          throw new Error(err?.error?.message || `HTTP ${retryRes.status}`);
+          throw new Error(getErrorMessage(err));
         }
         return retryRes.json();
       }
@@ -160,7 +161,7 @@ export const api = {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err?.error?.message || `HTTP ${res.status}`);
+      throw new Error(getErrorMessage(err));
     }
 
     return res.json();

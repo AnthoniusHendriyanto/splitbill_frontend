@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import useAuthStore from '../store/useAuthStore';
+import useBillStore from '../store/useBillStore';
 import Icon from '../components/Icon';
 
 export default function RegisterPage() {

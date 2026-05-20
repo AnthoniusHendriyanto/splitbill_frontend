@@ -1,8 +1,30 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { API } from '../config/api';
+import { getErrorMessage } from '../utils/errors';
 
 const authBase = `${API.base}/api/v1/auth`;
+
+const resetActiveBill = () => {
+  try {
+    import('./useBillStore').then((module) => {
+      if (module && module.default && typeof module.default.getState === 'function') {
+        const store = module.default.getState();
+        if (typeof store.resetBill === 'function') {
+          store.resetBill();
+        }
+        if (typeof store.updateUI === 'function') {
+          store.updateUI({ activeTab: 'dashboard', step: 1 });
+        }
+      }
+    }).catch(err => {
+      console.warn('Failed to dynamically load useBillStore:', err);
+    });
+  } catch (err) {
+    console.warn('Error trying to reset active bill store:', err);
+  }
+};
+
 
 const useAuthStore = create(
   persist(
@@ -21,7 +43,10 @@ const useAuthStore = create(
         return !!get().accessToken;
       },
 
-      setGuest: () => set({ isGuest: true, user: null, accessToken: null, refreshToken: null }),
+      setGuest: () => {
+        set({ isGuest: true, user: null, accessToken: null, refreshToken: null });
+        resetActiveBill();
+      },
 
       login: async (email, password) => {
         set({ isLoggingIn: true, loginError: null });
@@ -33,7 +58,7 @@ const useAuthStore = create(
           });
           if (!res.ok) {
             const err = await res.json();
-            throw new Error(err?.error?.message || 'Login failed');
+            throw new Error(getErrorMessage(err));
           }
           const data = await res.json();
           set({
@@ -43,6 +68,7 @@ const useAuthStore = create(
             isLoggingIn: false,
             loginError: null,
           });
+          resetActiveBill();
           return true;
         } catch (err) {
           set({ loginError: err.message, isLoggingIn: false });
@@ -60,7 +86,7 @@ const useAuthStore = create(
           });
           if (!res.ok) {
             const err = await res.json();
-            throw new Error(err?.error?.message || 'Registration failed');
+            throw new Error(getErrorMessage(err));
           }
           const data = await res.json();
           set({
@@ -70,6 +96,7 @@ const useAuthStore = create(
             isRegistering: false,
             registerError: null,
           });
+          resetActiveBill();
           return true;
         } catch (err) {
           set({ registerError: err.message, isRegistering: false });
@@ -91,6 +118,7 @@ const useAuthStore = create(
           // ignore logout errors
         }
         set({ user: null, accessToken: null, refreshToken: null, isGuest: false, loginError: null, registerError: null });
+        resetActiveBill();
       },
 
       setTokens: (accessToken, refreshToken) => set({ accessToken, refreshToken }),

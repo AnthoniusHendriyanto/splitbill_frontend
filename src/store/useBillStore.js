@@ -25,12 +25,12 @@ const useBillStore = create(
         bill: { ...state.bill, ...data } 
       })),
 
-      addPerson: () => set((state) => ({
+      addPerson: (name) => set((state) => ({
         bill: {
           ...state.bill,
           persons: [...state.bill.persons, { 
             id: uuidv4(), 
-            name: '', 
+            name: name || '', 
             paymentInfo: { bank: '', accountNumber: '', qrisData: '' } 
           }]
         }
